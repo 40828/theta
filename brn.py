@@ -9,12 +9,30 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-HOST = os.environ.get("HOST", "127.0.0.1")
+
+# ============================================================
+# THETA TECHNOLOGY DISCOVERY ENGINE
+# V1 - MONETIZABLE LAUNCH EDITION
+# ============================================================
+
+HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8000"))
+
+# Put your Stripe Payment Links into Render environment variables
+# after creating them.
+PRO_PAYMENT_LINK = os.environ.get(
+    "THETA_PRO_PAYMENT_LINK",
+    "https://buy.stripe.com/REPLACE_WITH_YOUR_PRO_LINK"
+)
+
+ENGINEER_PAYMENT_LINK = os.environ.get(
+    "THETA_ENGINEER_PAYMENT_LINK",
+    "https://buy.stripe.com/REPLACE_WITH_YOUR_ENGINEER_LINK"
+)
 
 
 # ============================================================
-# SAFE MATH ENGINE
+# SAFE MATHEMATICS
 # ============================================================
 
 SAFE_FUNCTIONS = {
@@ -36,50 +54,92 @@ SAFE_CONSTANTS = {
 
 
 class SafeExpression:
+    ALLOWED_NODES = (
+        ast.Expression,
+        ast.Constant,
+        ast.Name,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.Call,
+        ast.Load,
+        ast.Compare,
+        ast.Gt,
+        ast.GtE,
+        ast.Lt,
+        ast.LtE,
+        ast.Eq,
+        ast.NotEq,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+    )
+
     def __init__(self, expression):
-        self.expression = str(expression).strip()
-        self.tree = ast.parse(self.expression, mode="eval")
+        self.expression = expression
+        self.tree = ast.parse(expression, mode="eval")
+
+        for node in ast.walk(self.tree):
+            if not isinstance(node, self.ALLOWED_NODES):
+                raise ValueError(
+                    f"Unsupported expression element: {type(node).__name__}"
+                )
 
     def evaluate(self, variables):
-        return self._eval(self.tree.body, variables)
+        return self._evaluate_node(self.tree.body, variables)
 
-    def _eval(self, node, variables):
+    def _evaluate_node(self, node, variables):
         if isinstance(node, ast.Constant):
             if isinstance(node.value, (int, float, bool)):
                 return node.value
-            raise ValueError("Unsupported constant")
+            raise ValueError("Invalid constant")
 
         if isinstance(node, ast.Name):
             if node.id in variables:
                 return variables[node.id]
+
             if node.id in SAFE_CONSTANTS:
                 return SAFE_CONSTANTS[node.id]
-            raise ValueError("Unknown variable: " + node.id)
+
+            raise ValueError(f"Unknown variable: {node.id}")
 
         if isinstance(node, ast.BinOp):
-            left = self._eval(node.left, variables)
-            right = self._eval(node.right, variables)
+            left = self._evaluate_node(node.left, variables)
+            right = self._evaluate_node(node.right, variables)
 
             if isinstance(node.op, ast.Add):
                 return left + right
+
             if isinstance(node.op, ast.Sub):
                 return left - right
+
             if isinstance(node.op, ast.Mult):
                 return left * right
+
             if isinstance(node.op, ast.Div):
                 return left / right
+
             if isinstance(node.op, ast.Pow):
                 return left ** right
+
             if isinstance(node.op, ast.Mod):
                 return left % right
 
             raise ValueError("Unsupported operator")
 
         if isinstance(node, ast.UnaryOp):
-            value = self._eval(node.operand, variables)
+            value = self._evaluate_node(node.operand, variables)
 
             if isinstance(node.op, ast.USub):
                 return -value
+
             if isinstance(node.op, ast.UAdd):
                 return value
 
@@ -87,46 +147,55 @@ class SafeExpression:
 
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
-                raise ValueError("Unsupported function")
+                raise ValueError("Invalid function")
 
-            name = node.func.id
+            function_name = node.func.id
 
-            if name not in SAFE_FUNCTIONS:
-                raise ValueError("Function not allowed: " + name)
+            if function_name not in SAFE_FUNCTIONS:
+                raise ValueError(f"Function not allowed: {function_name}")
 
-            args = [self._eval(arg, variables) for arg in node.args]
-            return SAFE_FUNCTIONS[name](*args)
+            args = [
+                self._evaluate_node(argument, variables)
+                for argument in node.args
+            ]
+
+            return SAFE_FUNCTIONS[function_name](*args)
 
         if isinstance(node, ast.Compare):
-            left = self._eval(node.left, variables)
+            left = self._evaluate_node(node.left, variables)
 
-            for operator, comparator in zip(node.ops, node.comparators):
-                right = self._eval(comparator, variables)
+            results = []
 
-                if isinstance(operator, ast.Lt):
-                    result = left < right
-                elif isinstance(operator, ast.LtE):
-                    result = left <= right
-                elif isinstance(operator, ast.Gt):
-                    result = left > right
+            for operator, comparator in zip(
+                node.ops,
+                node.comparators
+            ):
+                right = self._evaluate_node(comparator, variables)
+
+                if isinstance(operator, ast.Gt):
+                    results.append(left > right)
                 elif isinstance(operator, ast.GtE):
-                    result = left >= right
+                    results.append(left >= right)
+                elif isinstance(operator, ast.Lt):
+                    results.append(left < right)
+                elif isinstance(operator, ast.LtE):
+                    results.append(left <= right)
                 elif isinstance(operator, ast.Eq):
-                    result = left == right
+                    results.append(left == right)
                 elif isinstance(operator, ast.NotEq):
-                    result = left != right
+                    results.append(left != right)
                 else:
                     raise ValueError("Unsupported comparison")
 
-                if not result:
-                    return False
-
                 left = right
 
-            return True
+            return all(results)
 
         if isinstance(node, ast.BoolOp):
-            values = [self._eval(value, variables) for value in node.values]
+            values = [
+                self._evaluate_node(value, variables)
+                for value in node.values
+            ]
 
             if isinstance(node.op, ast.And):
                 return all(values)
@@ -135,24 +204,16 @@ class SafeExpression:
                 return any(values)
 
         raise ValueError(
-            "Unsupported expression element: " + type(node).__name__
+            f"Could not evaluate {type(node).__name__}"
         )
 
 
 def evaluate_expression(expression, variables):
     try:
-        value = SafeExpression(expression).evaluate(variables)
-
-        if isinstance(value, bool):
-            return value
-
-        if not math.isfinite(float(value)):
-            return None
-
-        return float(value)
-
+        evaluator = SafeExpression(expression)
+        return evaluator.evaluate(variables)
     except Exception:
-        return None
+        return float("nan")
 
 
 # ============================================================
@@ -161,7 +222,8 @@ def evaluate_expression(expression, variables):
 
 def empty_model():
     return {
-        "name": "THETA Engineering Project",
+        "name": "Untitled Design",
+        "type": "custom",
         "description": "",
         "variables": [],
         "equations": [],
@@ -170,124 +232,119 @@ def empty_model():
     }
 
 
-def clean_name(name, fallback="x"):
-    name = str(name).strip()
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+def clean_name(value):
+    value = str(value).strip()
 
-    if not name:
-        name = fallback
+    value = "".join(
+        character
+        for character in value
+        if character.isalnum() or character == "_"
+    )
 
-    if name[0].isdigit():
-        name = "_" + name
+    if not value:
+        value = "x"
 
-    return name
+    if value[0].isdigit():
+        value = "x_" + value
+
+    return value
 
 
 def normalize_model(model):
-    base = empty_model()
+    result = empty_model()
 
     if not isinstance(model, dict):
-        return base
+        return result
 
-    base["name"] = str(model.get("name", base["name"]))
-    base["description"] = str(model.get("description", ""))
+    result["name"] = str(
+        model.get("name", result["name"])
+    )
 
-    for item in model.get("variables", []):
-        if not isinstance(item, dict):
+    result["type"] = str(
+        model.get("type", "custom")
+    )
+
+    result["description"] = str(
+        model.get("description", "")
+    )
+
+    for variable in model.get("variables", []):
+        if not isinstance(variable, dict):
             continue
 
-        name = clean_name(item.get("name", "x"), "x")
+        name = clean_name(variable.get("name", "x"))
 
         try:
-            minimum = float(item.get("min", 0.1))
+            minimum = float(variable.get("min", 0.1))
+            maximum = float(variable.get("max", 1.0))
         except Exception:
             minimum = 0.1
-
-        try:
-            maximum = float(item.get("max", 10.0))
-        except Exception:
-            maximum = 10.0
+            maximum = 1.0
 
         if maximum <= minimum:
             maximum = minimum + 1.0
 
-        base["variables"].append(
-            {
-                "name": name,
-                "min": minimum,
-                "max": maximum,
-                "unit": str(item.get("unit", "")),
-            }
-        )
+        result["variables"].append({
+            "name": name,
+            "min": minimum,
+            "max": maximum,
+            "unit": str(variable.get("unit", "")),
+        })
 
-    for item in model.get("equations", []):
-        if not isinstance(item, dict):
+    for equation in model.get("equations", []):
+        if not isinstance(equation, dict):
             continue
 
-        base["equations"].append(
-            {
-                "name": clean_name(item.get("name", "eq"), "eq"),
-                "expression": str(item.get("expression", "0")),
-                "unit": str(item.get("unit", "")),
-            }
-        )
+        result["equations"].append({
+            "name": clean_name(equation.get("name", "result")),
+            "expression": str(
+                equation.get("expression", "0")
+            ),
+            "unit": str(equation.get("unit", "")),
+        })
 
-    for item in model.get("constraints", []):
-        if not isinstance(item, dict):
+    for constraint in model.get("constraints", []):
+        if not isinstance(constraint, dict):
             continue
 
-        sense = str(item.get("sense", "lte")).lower()
+        result["constraints"].append({
+            "expression": str(
+                constraint.get("expression", "0 >= 0")
+            )
+        })
 
-        if sense not in ("lte", "gte", "eq"):
-            sense = "lte"
-
-        try:
-            limit = float(item.get("limit", 0))
-        except Exception:
-            limit = 0.0
-
-        base["constraints"].append(
-            {
-                "expression": str(item.get("expression", "0")),
-                "sense": sense,
-                "limit": limit,
-                "name": str(item.get("name", "Constraint")),
-            }
-        )
-
-    for item in model.get("objectives", []):
-        if not isinstance(item, dict):
+    for objective in model.get("objectives", []):
+        if not isinstance(objective, dict):
             continue
 
-        direction = str(item.get("direction", "min")).lower()
+        direction = str(
+            objective.get("direction", "minimize")
+        ).lower()
 
-        if direction not in ("min", "max"):
-            direction = "min"
+        if direction not in ("minimize", "maximize"):
+            direction = "minimize"
 
-        try:
-            weight = float(item.get("weight", 1))
-        except Exception:
-            weight = 1.0
+        result["objectives"].append({
+            "expression": str(
+                objective.get("expression", "0")
+            ),
+            "direction": direction,
+        })
 
-        base["objectives"].append(
-            {
-                "expression": str(item.get("expression", "0")),
-                "direction": direction,
-                "name": str(item.get("name", "Objective")),
-                "weight": weight,
-            }
-        )
-
-    return base
+    return result
 
 
 # ============================================================
-# NATURAL LANGUAGE ENGINE
+# NATURAL LANGUAGE ENGINEERING INTERPRETER
 # ============================================================
 
-def extract_number(text, patterns, default):
+def extract_number(text, patterns, default=None):
     for pattern in patterns:
-        match = re.search(pattern, text, re.I)
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
 
         if match:
             try:
@@ -299,646 +356,648 @@ def extract_number(text, patterns, default):
 
 
 def interpret_engineering_request(text):
-    text = str(text).strip()
-    lower = text.lower()
+    original = text
+    text = text.lower().strip()
 
-    if not text:
-        return empty_model()
+    model = empty_model()
+    model["description"] = original
 
     # --------------------------------------------------------
     # BEAM
     # --------------------------------------------------------
 
-    if "beam" in lower or "cantilever" in lower:
+    if any(
+        word in text
+        for word in [
+            "beam",
+            "cantilever",
+            "beam design",
+        ]
+    ):
+        model["name"] = "Lightweight Beam"
+        model["type"] = "beam"
+
         load = extract_number(
-            lower,
+            text,
             [
-                r"(\d+(?:\.\d+)?)\s*(?:n|newtons?)",
-                r"load\s*(?:of|=)?\s*(\d+(?:\.\d+)?)",
-                r"force\s*(?:of|=)?\s*(\d+(?:\.\d+)?)",
+                r"hold\s+([0-9.]+)\s*n",
+                r"load\s+(?:of\s+)?([0-9.]+)\s*n",
+                r"([0-9.]+)\s*n\s+load",
             ],
             500.0,
         )
 
         length = extract_number(
-            lower,
+            text,
             [
-                r"(\d+(?:\.\d+)?)\s*m(?:eter|eters)?\s*(?:long)?",
-                r"length\s*(?:of|=)?\s*(\d+(?:\.\d+)?)",
+                r"over\s+([0-9.]+)\s*m",
+                r"length\s+(?:of\s+)?([0-9.]+)\s*m",
+                r"([0-9.]+)\s*m\s+(?:long|beam)",
             ],
             1.0,
         )
 
         stress_limit = extract_number(
-            lower,
+            text,
             [
-                r"stress\s*(?:limit|maximum|max)?\s*(?:of|=)?\s*(\d+(?:\.\d+)?)",
-                r"(\d+(?:\.\d+)?)\s*(?:mpa|megapascals?)",
+                r"maximum\s+stress\s+of\s+([0-9.]+)\s*mpa",
+                r"stress\s+limit\s+(?:of\s+)?([0-9.]+)\s*mpa",
+                r"([0-9.]+)\s*mpa\s+(?:stress|limit)",
             ],
-            250.0,
+            200.0,
         )
 
-        return {
-            "name": "Lightweight Beam",
-            "description": text,
-            "variables": [
-                {
-                    "name": "b",
-                    "min": 0.01,
-                    "max": 0.20,
-                    "unit": "m",
-                },
-                {
-                    "name": "h",
-                    "min": 0.01,
-                    "max": 0.30,
-                    "unit": "m",
-                },
-            ],
-            "equations": [
-                {
-                    "name": "stress",
-                    "expression": f"6*{load}*{length}/(b*h*h)",
-                    "unit": "Pa",
-                },
-                {
-                    "name": "mass",
-                    "expression": f"b*h*7850*{length}",
-                    "unit": "kg",
-                },
-            ],
-            "constraints": [
-                {
-                    "name": "Stress Limit",
-                    "expression": "stress",
-                    "sense": "lte",
-                    "limit": stress_limit * 1000000,
-                }
-            ],
-            "objectives": [
-                {
-                    "name": "Minimize Mass",
-                    "expression": "mass",
-                    "direction": "min",
-                    "weight": 1,
-                }
-            ],
-        }
+        model["variables"] = [
+            {
+                "name": "b",
+                "min": 0.01,
+                "max": 0.20,
+                "unit": "m",
+            },
+            {
+                "name": "h",
+                "min": 0.01,
+                "max": 0.20,
+                "unit": "m",
+            },
+        ]
+
+        model["equations"] = [
+            {
+                "name": "moment",
+                "expression": f"{load} * {length}",
+                "unit": "N*m",
+            },
+            {
+                "name": "section",
+                "expression": "b * h^2 / 6",
+                "unit": "m^3",
+            },
+            {
+                "name": "stress",
+                "expression": f"({load} * {length}) / (b * h^2 / 6)",
+                "unit": "Pa",
+            },
+            {
+                "name": "area",
+                "expression": "b * h",
+                "unit": "m^2",
+            },
+            {
+                "name": "mass",
+                "expression": f"b * h * {length} * 7850",
+                "unit": "kg",
+            },
+        ]
+
+        model["constraints"] = [
+            f"stress <= {stress_limit * 1000000}"
+        ]
+
+        model["objectives"] = [
+            {
+                "expression": "mass",
+                "direction": "minimize",
+            }
+        ]
+
+        return normalize_model(model)
 
     # --------------------------------------------------------
     # SPRING
     # --------------------------------------------------------
 
-    if "spring" in lower:
+    if "spring" in text:
+        model["name"] = "Lightweight Spring"
+        model["type"] = "spring"
+
         force = extract_number(
-            lower,
+            text,
             [
-                r"(\d+(?:\.\d+)?)\s*(?:n|newtons?)",
-                r"force\s*(?:of|=)?\s*(\d+(?:\.\d+)?)",
+                r"spring\s+for\s+([0-9.]+)\s*n",
+                r"handle\s+([0-9.]+)\s*n",
+                r"force\s+(?:of\s+)?([0-9.]+)\s*n",
             ],
             100.0,
         )
 
-        return {
-            "name": "Spring Design",
-            "description": text,
-            "variables": [
-                {
-                    "name": "d",
-                    "min": 0.001,
-                    "max": 0.02,
-                    "unit": "m",
-                },
-                {
-                    "name": "D",
-                    "min": 0.01,
-                    "max": 0.10,
-                    "unit": "m",
-                },
-                {
-                    "name": "n",
-                    "min": 2,
-                    "max": 20,
-                    "unit": "turns",
-                },
-            ],
-            "equations": [
-                {
-                    "name": "stiffness",
-                    "expression": "79000000000*d**4/(8*D**3*n)",
-                    "unit": "N/m",
-                },
-                {
-                    "name": "mass",
-                    "expression": "n*pi*pi*D*d*d*7850/4",
-                    "unit": "kg",
-                },
-                {
-                    "name": "deflection",
-                    "expression": f"{force}/stiffness",
-                    "unit": "m",
-                },
-            ],
-            "constraints": [
-                {
-                    "name": "Minimum Stiffness",
-                    "expression": "stiffness",
-                    "sense": "gte",
-                    "limit": force / 0.05,
-                }
-            ],
-            "objectives": [
-                {
-                    "name": "Minimize Mass",
-                    "expression": "mass",
-                    "direction": "min",
-                    "weight": 1,
-                }
-            ],
-        }
+        model["variables"] = [
+            {
+                "name": "d",
+                "min": 0.001,
+                "max": 0.010,
+                "unit": "m",
+            },
+            {
+                "name": "D",
+                "min": 0.010,
+                "max": 0.080,
+                "unit": "m",
+            },
+            {
+                "name": "n",
+                "min": 3,
+                "max": 20,
+                "unit": "turns",
+            },
+        ]
+
+        model["equations"] = [
+            {
+                "name": "stiffness",
+                "expression": "79000000000 * d^4 / (8 * D^3 * n)",
+                "unit": "N/m",
+            },
+            {
+                "name": "deflection",
+                "expression": f"{force} / (79000000000 * d^4 / (8 * D^3 * n))",
+                "unit": "m",
+            },
+            {
+                "name": "mass",
+                "expression": "pi * D * n * pi * d^2 / 4 * 7850",
+                "unit": "kg",
+            },
+        ]
+
+        model["constraints"] = [
+            f"stiffness >= {force / 0.05}"
+        ]
+
+        model["objectives"] = [
+            {
+                "expression": "mass",
+                "direction": "minimize",
+            }
+        ]
+
+        return normalize_model(model)
 
     # --------------------------------------------------------
     # DRONE
     # --------------------------------------------------------
 
-    if (
-        "drone" in lower
-        or "quadcopter" in lower
-        or "quad" in lower
-        or "uav" in lower
+    if any(
+        word in text
+        for word in [
+            "drone",
+            "quadcopter",
+            "quad",
+            "uav",
+        ]
     ):
-        return {
-            "name": "Drone Optimization",
-            "description": text,
-            "variables": [
-                {
-                    "name": "arm",
-                    "min": 0.10,
-                    "max": 0.40,
-                    "unit": "m",
-                },
-                {
-                    "name": "motor_mass",
-                    "min": 0.03,
-                    "max": 0.20,
-                    "unit": "kg",
-                },
-                {
-                    "name": "battery_mass",
-                    "min": 0.10,
-                    "max": 1.00,
-                    "unit": "kg",
-                },
-            ],
-            "equations": [
-                {
-                    "name": "frame_mass",
-                    "expression": "4*arm*0.15",
-                    "unit": "kg",
-                },
-                {
-                    "name": "total_mass",
-                    "expression": "frame_mass+4*motor_mass+battery_mass",
-                    "unit": "kg",
-                },
-                {
-                    "name": "payload_margin",
-                    "expression": "4*2.5-total_mass*9.81",
-                    "unit": "N",
-                },
-            ],
-            "constraints": [
-                {
-                    "name": "Positive Payload Margin",
-                    "expression": "payload_margin",
-                    "sense": "gte",
-                    "limit": 0,
-                }
-            ],
-            "objectives": [
-                {
-                    "name": "Minimize Total Mass",
-                    "expression": "total_mass",
-                    "direction": "min",
-                    "weight": 1,
-                }
-            ],
-        }
+        model["name"] = "Lightweight Drone"
+        model["type"] = "drone"
+
+        model["variables"] = [
+            {
+                "name": "arm",
+                "min": 0.10,
+                "max": 0.40,
+                "unit": "m",
+            },
+            {
+                "name": "motor_mass",
+                "min": 0.020,
+                "max": 0.100,
+                "unit": "kg",
+            },
+            {
+                "name": "battery_mass",
+                "min": 0.10,
+                "max": 0.60,
+                "unit": "kg",
+            },
+        ]
+
+        model["equations"] = [
+            {
+                "name": "frame_mass",
+                "expression": "4 * arm * 0.20",
+                "unit": "kg",
+            },
+            {
+                "name": "total_mass",
+                "expression": "frame_mass + 4 * motor_mass + battery_mass",
+                "unit": "kg",
+            },
+            {
+                "name": "payload_margin",
+                "expression": "4 * 2.5 - total_mass",
+                "unit": "kg",
+            },
+        ]
+
+        model["constraints"] = [
+            "payload_margin >= 0"
+        ]
+
+        model["objectives"] = [
+            {
+                "expression": "total_mass",
+                "direction": "minimize",
+            }
+        ]
+
+        return normalize_model(model)
 
     # --------------------------------------------------------
     # BRACKET
     # --------------------------------------------------------
 
-    if (
-        "bracket" in lower
-        or "mount" in lower
-        or "plate" in lower
+    if any(
+        word in text
+        for word in [
+            "bracket",
+            "mount",
+            "mounting plate",
+            "structural mount",
+        ]
     ):
-        return {
-            "name": "Lightweight Bracket",
-            "description": text,
-            "variables": [
-                {
-                    "name": "width",
-                    "min": 0.02,
-                    "max": 0.20,
-                    "unit": "m",
-                },
-                {
-                    "name": "height",
-                    "min": 0.02,
-                    "max": 0.20,
-                    "unit": "m",
-                },
-                {
-                    "name": "thickness",
-                    "min": 0.002,
-                    "max": 0.030,
-                    "unit": "m",
-                },
-            ],
-            "equations": [
-                {
-                    "name": "volume",
-                    "expression": "width*height*thickness",
-                    "unit": "m^3",
-                },
-                {
-                    "name": "mass",
-                    "expression": "volume*2700",
-                    "unit": "kg",
-                },
-                {
-                    "name": "section",
-                    "expression": "width*thickness**3/12",
-                    "unit": "m^4",
-                },
-            ],
-            "constraints": [
-                {
-                    "name": "Minimum Thickness",
-                    "expression": "thickness",
-                    "sense": "gte",
-                    "limit": 0.005,
-                }
-            ],
-            "objectives": [
-                {
-                    "name": "Minimize Mass",
-                    "expression": "mass",
-                    "direction": "min",
-                    "weight": 1,
-                }
-            ],
-        }
+        model["name"] = "Lightweight Mounting Bracket"
+        model["type"] = "bracket"
 
-    # --------------------------------------------------------
-    # GENERIC FALLBACK
-    # --------------------------------------------------------
+        model["variables"] = [
+            {
+                "name": "width",
+                "min": 0.03,
+                "max": 0.20,
+                "unit": "m",
+            },
+            {
+                "name": "height",
+                "min": 0.03,
+                "max": 0.20,
+                "unit": "m",
+            },
+            {
+                "name": "thickness",
+                "min": 0.005,
+                "max": 0.040,
+                "unit": "m",
+            },
+        ]
 
-    return {
-        "name": "THETA Concept Design",
-        "description": text,
-        "variables": [
+        model["equations"] = [
             {
-                "name": "x",
-                "min": 0.1,
-                "max": 10.0,
-                "unit": "",
+                "name": "volume",
+                "expression": "width * height * thickness",
+                "unit": "m^3",
             },
             {
-                "name": "y",
-                "min": 0.1,
-                "max": 10.0,
-                "unit": "",
-            },
-        ],
-        "equations": [
-            {
-                "name": "performance",
-                "expression": "x+y",
-                "unit": "",
+                "name": "mass",
+                "expression": "volume * 7850",
+                "unit": "kg",
             },
             {
-                "name": "cost",
-                "expression": "x*x+y*y",
-                "unit": "",
+                "name": "section",
+                "expression": "width * thickness^2 / 6",
+                "unit": "m^3",
             },
-        ],
-        "constraints": [],
-        "objectives": [
+        ]
+
+        model["constraints"] = [
+            "thickness >= 0.005"
+        ]
+
+        model["objectives"] = [
             {
-                "name": "Maximize Performance",
-                "expression": "performance",
-                "direction": "max",
-                "weight": 1,
+                "expression": "mass",
+                "direction": "minimize",
             }
-        ],
-    }
+        ]
+
+        return normalize_model(model)
+
+    # --------------------------------------------------------
+    # GENERIC MODEL
+    # --------------------------------------------------------
+
+    model["name"] = "Technology Discovery Model"
+    model["type"] = "custom"
+
+    model["variables"] = [
+        {
+            "name": "x",
+            "min": 0.1,
+            "max": 10.0,
+            "unit": "",
+        },
+        {
+            "name": "y",
+            "min": 0.1,
+            "max": 10.0,
+            "unit": "",
+        },
+    ]
+
+    model["equations"] = [
+        {
+            "name": "performance",
+            "expression": "x + y",
+            "unit": "",
+        },
+        {
+            "name": "cost",
+            "expression": "x^2 + y^2",
+            "unit": "",
+        },
+    ]
+
+    model["constraints"] = []
+
+    model["objectives"] = [
+        {
+            "expression": "performance",
+            "direction": "maximize",
+        }
+    ]
+
+    return normalize_model(model)
 
 
 # ============================================================
-# MODEL EVALUATION
+# MODEL CALCULATION
 # ============================================================
 
 def calculate_model(model, design):
-    values = dict(design)
+    variables = dict(design)
+    equations = {}
 
-    for equation in model["equations"]:
-        name = clean_name(equation["name"], "eq")
-        expression = equation["expression"]
+    for equation in model.get("equations", []):
+        expression = equation["expression"].replace("^", "**")
 
-        result = evaluate_expression(expression, values)
+        try:
+            value = evaluate_expression(
+                expression,
+                {
+                    **variables,
+                    **equations,
+                }
+            )
+        except Exception:
+            value = float("nan")
 
-        if result is None:
-            return None
+        equations[equation["name"]] = value
 
-        values[name] = result
-
-    return values
-
-
-def constraint_violation(constraint, values):
-    expression = constraint["expression"]
-    limit = constraint["limit"]
-    sense = constraint["sense"]
-
-    result = evaluate_expression(expression, values)
-
-    if result is None:
-        return float("inf")
-
-    if sense == "lte":
-        return max(0.0, result - limit)
-
-    if sense == "gte":
-        return max(0.0, limit - result)
-
-    if sense == "eq":
-        return abs(result - limit)
-
-    return float("inf")
+    return equations
 
 
-def objective_value(objective, values):
-    result = evaluate_expression(
-        objective["expression"],
-        values,
+def constraint_violation(model, design, results=None):
+    if results is None:
+        results = calculate_model(model, design)
+
+    variables = {
+        **design,
+        **results,
+    }
+
+    total_violation = 0.0
+    passed = True
+
+    for constraint in model.get("constraints", []):
+        expression = constraint["expression"].replace(
+            "^",
+            "**"
+        )
+
+        try:
+            value = evaluate_expression(
+                expression,
+                variables
+            )
+
+            if isinstance(value, bool):
+                if not value:
+                    total_violation += 1.0
+                    passed = False
+                continue
+
+            if value < 0:
+                total_violation += abs(value)
+                passed = False
+
+        except Exception:
+            total_violation += 1000000.0
+            passed = False
+
+    return total_violation, passed
+
+
+def objective_value(model, design, results=None):
+    if results is None:
+        results = calculate_model(model, design)
+
+    variables = {
+        **design,
+        **results,
+    }
+
+    objectives = model.get("objectives", [])
+
+    if not objectives:
+        return 0.0, "maximize"
+
+    objective = objectives[0]
+
+    expression = objective["expression"].replace(
+        "^",
+        "**"
     )
 
-    if result is None:
-        return None
+    try:
+        value = evaluate_expression(
+            expression,
+            variables
+        )
 
-    return float(result)
+        return float(value), objective["direction"]
+
+    except Exception:
+        return float("inf"), objective["direction"]
 
 
 def evaluate_design(model, design):
-    values = calculate_model(model, design)
+    results = calculate_model(model, design)
 
-    if values is None:
-        return None
+    violation, passed = constraint_violation(
+        model,
+        design,
+        results
+    )
 
-    violations = []
-
-    for constraint in model["constraints"]:
-        violations.append(
-            constraint_violation(
-                constraint,
-                values,
-            )
-        )
-
-    total_violation = sum(violations)
-
-    objectives = []
-
-    for objective in model["objectives"]:
-        value = objective_value(
-            objective,
-            values,
-        )
-
-        if value is None:
-            return None
-
-        objectives.append(
-            {
-                "name": objective["name"],
-                "value": value,
-                "direction": objective["direction"],
-            }
-        )
+    objective, direction = objective_value(
+        model,
+        design,
+        results
+    )
 
     return {
-        "design": dict(design),
-        "values": values,
-        "violations": violations,
-        "total_violation": total_violation,
-        "objectives": objectives,
+        "design": design,
+        "results": results,
+        "violation": violation,
+        "passed": passed,
+        "objective": objective,
+        "direction": direction,
     }
 
 
 # ============================================================
-# OPTIMIZER
+# OPTIMIZATION ENGINE
 # ============================================================
-
-def score_result(result, model):
-    if result is None:
-        return float("-inf")
-
-    penalty = result["total_violation"]
-
-    if not math.isfinite(penalty):
-        return float("-inf")
-
-    score = -penalty * 1000000.0
-
-    for objective in result["objectives"]:
-        value = objective["value"]
-        weight = 1.0
-
-        for model_objective in model["objectives"]:
-            if model_objective["name"] == objective["name"]:
-                weight = model_objective.get("weight", 1.0)
-                break
-
-        if objective["direction"] == "min":
-            score -= value * weight
-        else:
-            score += value * weight
-
-    return score
-
 
 def random_design(model):
     design = {}
 
-    for variable in model["variables"]:
-        minimum = variable["min"]
-        maximum = variable["max"]
+    for variable in model.get("variables", []):
+        minimum = float(variable["min"])
+        maximum = float(variable["max"])
 
-        design[variable["name"]] = random.uniform(
-            minimum,
-            maximum,
+        design[variable["name"]] = (
+            random.uniform(minimum, maximum)
         )
 
     return design
 
 
-def mutate_design(model, design):
+def mutate_design(model, design, strength=0.15):
     new_design = dict(design)
 
-    for variable in model["variables"]:
+    for variable in model.get("variables", []):
         name = variable["name"]
-        minimum = variable["min"]
-        maximum = variable["max"]
+        minimum = float(variable["min"])
+        maximum = float(variable["max"])
 
-        if random.random() < 0.75:
-            span = maximum - minimum
-            change = random.gauss(
-                0,
-                span * 0.12,
-            )
+        current = new_design[name]
+        span = maximum - minimum
 
-            new_value = new_design[name] + change
+        change = random.gauss(
+            0,
+            span * strength
+        )
 
-            new_value = max(
-                minimum,
-                min(maximum, new_value),
-            )
+        value = current + change
 
-            new_design[name] = new_value
+        value = max(
+            minimum,
+            min(maximum, value)
+        )
+
+        new_design[name] = value
 
     return new_design
 
 
+def score_result(result):
+    violation = result["violation"]
+    objective = result["objective"]
+    direction = result["direction"]
+
+    if not math.isfinite(objective):
+        return -1e30
+
+    penalty = violation * 1000000
+
+    if direction == "minimize":
+        return -objective - penalty
+
+    return objective - penalty
+
+
 def optimize_model(
     model,
-    population_size=700,
-    generations=80,
+    population_size=500,
+    generations=60
 ):
     model = normalize_model(model)
-
-    if not model["variables"]:
-        return {
-            "success": False,
-            "error": "Add at least one variable.",
-        }
-
-    if not model["objectives"]:
-        return {
-            "success": False,
-            "error": "Add at least one objective.",
-        }
 
     population = []
 
     for _ in range(population_size):
         design = random_design(model)
-
-        result = evaluate_design(
-            model,
-            design,
+        population.append(
+            evaluate_design(model, design)
         )
 
-        if result is not None:
-            population.append(result)
+    history = []
 
-    if not population:
-        return {
-            "success": False,
-            "error": "THETA could not evaluate the model.",
-        }
-
-    for _ in range(generations):
-
+    for generation in range(generations):
         population.sort(
-            key=lambda item: score_result(
-                item,
-                model,
-            ),
-            reverse=True,
+            key=score_result,
+            reverse=True
         )
 
-        elite_count = max(
-            10,
-            int(len(population) * 0.12),
-        )
+        best = population[0]
 
-        elites = population[:elite_count]
+        history.append({
+            "generation": generation + 1,
+            "score": score_result(best),
+            "objective": best["objective"],
+            "passed": best["passed"],
+        })
 
-        next_population = list(elites)
+        survivors = population[
+            :max(10, population_size // 10)
+        ]
 
-        while len(next_population) < population_size:
+        new_population = survivors[:]
 
-            parent = random.choice(elites)
+        while len(new_population) < population_size:
+            parent = random.choice(survivors)
 
-            child_design = mutate_design(
+            design = mutate_design(
                 model,
                 parent["design"],
-            )
-
-            child_result = evaluate_design(
-                model,
-                child_design,
-            )
-
-            if child_result is not None:
-                next_population.append(
-                    child_result
+                strength=max(
+                    0.02,
+                    0.25 * (
+                        1 -
+                        generation / generations
+                    )
                 )
+            )
 
-        population = next_population
+            new_population.append(
+                evaluate_design(model, design)
+            )
+
+        population = new_population
 
     population.sort(
-        key=lambda item: score_result(
-            item,
-            model,
-        ),
-        reverse=True,
+        key=score_result,
+        reverse=True
     )
 
-    feasible = [
-        item
-        for item in population
-        if item["total_violation"] <= 1e-12
-    ]
-
-    if feasible:
-        ranked = feasible
-    else:
-        ranked = population
-
-    best = ranked[0]
+    best_results = population[:10]
 
     return {
-        "success": True,
-        "best": best,
-        "top": ranked[:20],
-        "evaluated": population_size * generations,
-        "feasible_count": len(feasible),
+        "best": best_results[0],
+        "alternatives": best_results[:10],
+        "history": history,
+        "population_size": population_size,
+        "generations": generations,
     }
 
 
 # ============================================================
-# EXAMPLES
+# EXAMPLE MODELS
 # ============================================================
 
 def beam_example():
     return interpret_engineering_request(
-        "Design a lightweight cantilever beam that holds 500 N over 1 meter with a maximum stress of 250 MPa."
+        "Design a lightweight beam that can hold 500 N."
     )
 
 
 def spring_example():
     return interpret_engineering_request(
-        "Design a lightweight spring for 100 N of force."
+        "Design a lightweight spring for 100 N."
     )
 
 
 def drone_example():
     return interpret_engineering_request(
-        "Design a lightweight drone with good payload performance."
+        "Design a lightweight drone."
     )
 
 
@@ -952,32 +1011,60 @@ def bracket_example():
 # HTML APPLICATION
 # ============================================================
 
-HTML = r"""<!DOCTYPE html>
+HTML = r"""
+<!DOCTYPE html>
 <html lang="en">
 <head>
-
 <meta charset="UTF-8">
 
-<meta name="google-site-verification" content="MMIdUHh9590WwUT1WeDykMUXzQPk8wpeor6DDPGCAp4" />
+<meta
+    name="google-site-verification"
+    content="MMIdUHh9590WwUT1WeDykMUXzQPk8wpeor6DDPGCAp4"
+>
 
 <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0"
 >
 
-<title>THETA Technology Discovery Engine</title>
+<title>THETA — Technology Discovery Engine</title>
 
 <style>
+
+:root {
+    --bg: #07090d;
+    --panel: #0d1118;
+    --panel2: #111722;
+    --border: #252d3a;
+    --text: #f4f7fb;
+    --muted: #8e99a8;
+    --accent: #ffffff;
+    --green: #53e08b;
+    --red: #ff6b6b;
+}
 
 * {
     box-sizing: border-box;
 }
 
+html {
+    scroll-behavior: smooth;
+}
+
 body {
     margin: 0;
-    background: #07090d;
-    color: #f4f7fb;
-    font-family: Arial, Helvetica, sans-serif;
+    background:
+        radial-gradient(
+            circle at 50% -20%,
+            #182131 0,
+            #07090d 42%
+        );
+    color: var(--text);
+    font-family:
+        Inter,
+        Arial,
+        Helvetica,
+        sans-serif;
 }
 
 button,
@@ -992,312 +1079,475 @@ button {
 }
 
 .topbar {
-    height: 64px;
-    border-bottom: 1px solid #252a33;
+    height: 70px;
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 28px;
-    background: #090b10;
+    background: rgba(7, 9, 13, 0.90);
+    backdrop-filter: blur(15px);
+    position: sticky;
+    top: 0;
+    z-index: 20;
 }
 
 .logo {
-    font-size: 25px;
-    font-weight: 800;
+    font-size: 23px;
+    font-weight: 900;
     letter-spacing: 5px;
 }
 
 .status {
-    color: #70ff9b;
-    font-size: 13px;
-}
-
-.container {
-    width: min(1200px, calc(100% - 32px));
-    margin: 0 auto;
+    color: var(--green);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
 }
 
 .hero {
-    padding: 60px 0 30px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 90px 24px 50px;
+    text-align: center;
+}
+
+.eyebrow {
+    display: inline-block;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,.03);
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 1.4px;
+    color: var(--muted);
+    text-transform: uppercase;
 }
 
 .hero h1 {
-    font-size: clamp(38px, 6vw, 76px);
-    line-height: 0.95;
-    margin: 0 0 20px;
-    max-width: 850px;
+    font-size: clamp(42px, 8vw, 82px);
+    line-height: .95;
+    margin: 24px 0;
+    letter-spacing: -4px;
 }
 
 .hero p {
-    color: #aab3c2;
+    max-width: 720px;
+    margin: 0 auto;
+    color: var(--muted);
     font-size: 18px;
-    line-height: 1.6;
-    max-width: 760px;
+    line-height: 1.7;
 }
 
 .modebar {
+    max-width: 1100px;
+    margin: 0 auto 25px;
+    padding: 0 24px;
     display: flex;
-    gap: 8px;
-    margin: 20px 0;
+    gap: 10px;
+    justify-content: center;
 }
 
-.modebutton {
-    border: 1px solid #303744;
-    background: #11151d;
-    color: #b7c0ce;
-    border-radius: 10px;
-    padding: 10px 18px;
+.mode-button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 11px 18px;
+    border-radius: 9px;
 }
 
-.modebutton.active {
-    background: #f4f7fb;
-    color: #080a0e;
+.mode-button.active {
+    background: #ffffff;
+    color: #000000;
+}
+
+.main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 24px 100px;
 }
 
 .panel {
-    border: 1px solid #272d38;
-    border-radius: 16px;
-    background: #0c1017;
-    padding: 24px;
+    background: rgba(13,17,24,.92);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    overflow: hidden;
     margin-bottom: 22px;
 }
 
-.panel h2 {
-    margin-top: 0;
+.panel-header {
+    padding: 20px 22px;
+    border-bottom: 1px solid var(--border);
 }
 
-.hidden {
-    display: none !important;
+.panel-header h2 {
+    margin: 0;
+    font-size: 17px;
+}
+
+.panel-header p {
+    margin: 7px 0 0;
+    color: var(--muted);
+    font-size: 13px;
 }
 
 .chat {
-    min-height: 420px;
-    display: flex;
-    flex-direction: column;
-}
-
-.messages {
-    flex: 1;
     min-height: 300px;
-    max-height: 520px;
+    max-height: 500px;
     overflow-y: auto;
-    padding: 8px;
+    padding: 22px;
 }
 
 .message {
-    max-width: 80%;
-    padding: 15px 17px;
-    margin: 10px 0;
-    border-radius: 14px;
-    line-height: 1.5;
-}
-
-.message.theta {
-    background: #151b24;
-    border: 1px solid #2c3542;
+    margin-bottom: 18px;
+    max-width: 850px;
 }
 
 .message.user {
-    background: #f4f7fb;
-    color: #080a0e;
     margin-left: auto;
 }
 
-.chatrow {
+.message-bubble {
+    display: inline-block;
+    padding: 14px 16px;
+    border-radius: 13px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+}
+
+.message.ai .message-bubble {
+    background: #111722;
+    border: 1px solid var(--border);
+}
+
+.message.user .message-bubble {
+    background: #ffffff;
+    color: #000000;
+}
+
+.message-label {
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 5px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.input-area {
+    padding: 18px;
+    border-top: 1px solid var(--border);
+}
+
+.chat-row {
     display: flex;
     gap: 10px;
-    margin-top: 15px;
 }
 
-.chatrow input {
+.chat-input {
     flex: 1;
-}
-
-input,
-textarea,
-select {
-    width: 100%;
     background: #080b10;
-    color: #f4f7fb;
-    border: 1px solid #303744;
-    border-radius: 9px;
-    padding: 11px 12px;
+    border: 1px solid var(--border);
+    color: white;
+    border-radius: 10px;
+    padding: 14px;
     outline: none;
 }
 
-textarea {
-    min-height: 90px;
-    resize: vertical;
+.chat-input:focus {
+    border-color: #657083;
 }
 
-input:focus,
-textarea:focus,
-select:focus {
-    border-color: #758198;
+.primary-button {
+    background: white;
+    color: black;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 19px;
+    font-weight: 800;
 }
 
-.primary {
-    background: #f4f7fb;
-    color: #080a0e;
-    border: 0;
-    border-radius: 9px;
-    padding: 11px 18px;
-    font-weight: 700;
+.secondary-button {
+    background: transparent;
+    color: white;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 19px;
 }
 
-.secondary {
-    background: #171c25;
-    color: #f4f7fb;
-    border: 1px solid #303744;
-    border-radius: 9px;
-    padding: 10px 15px;
-}
-
-.danger {
-    background: #241418;
-    color: #ff9a9a;
-    border: 1px solid #5a2930;
-    border-radius: 8px;
-    padding: 7px 11px;
-}
-
-.section-title {
+.quick-buttons {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.section-title h3 {
-    margin: 0;
-}
-
-.section-buttons {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.builder-row {
-    border: 1px solid #252c36;
-    border-radius: 11px;
-    padding: 12px;
-    margin-bottom: 10px;
-    background: #0a0e14;
-}
-
-.grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 9px;
-    align-items: end;
-}
-
-.field label {
-    display: block;
-    color: #7f8999;
-    font-size: 11px;
-    margin-bottom: 5px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-}
-
-.review {
-    background: #090d13;
-    border: 1px solid #252d39;
-    border-radius: 12px;
-    padding: 18px;
-}
-
-.review h3 {
-    margin-top: 0;
-}
-
-.review-item {
-    padding: 8px 0;
-    border-bottom: 1px solid #202631;
-}
-
-.review-item:last-child {
-    border-bottom: 0;
-}
-
-.example-buttons {
-    display: flex;
-    flex-wrap: wrap;
     gap: 8px;
+    flex-wrap: wrap;
     margin-top: 12px;
+}
+
+.quick-button {
+    background: #111722;
+    color: #dce3ed;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 13px;
+    font-size: 12px;
+}
+
+.example-box {
+    margin-top: 15px;
+    border: 1px solid var(--border);
+    background: #0a0e14;
+    border-radius: 12px;
+    padding: 13px;
+}
+
+.example-title {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+}
+
+.example-choice {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--border);
+    background: #101620;
+    color: white;
+    border-radius: 9px;
+    padding: 11px;
+    margin: 7px 0;
+}
+
+.example-choice:hover {
+    background: #18202c;
 }
 
 .results-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    grid-template-columns:
+        repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    padding: 22px;
 }
 
-.result-card {
-    border: 1px solid #282f3a;
+.stat {
+    background: #0a0e14;
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 17px;
-    background: #090d13;
 }
 
-.result-card h3 {
+.stat-label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.stat-value {
+    font-size: 23px;
+    font-weight: 800;
+    margin-top: 9px;
+}
+
+.pass {
+    color: var(--green);
+}
+
+.fail {
+    color: var(--red);
+}
+
+.result-body {
+    padding: 0 22px 22px;
+}
+
+.design-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.design-table th,
+.design-table td {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    font-size: 13px;
+}
+
+.design-table th {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.upgrade {
+    margin-top: 20px;
+    padding: 25px;
+    border: 1px solid var(--border);
+    border-radius: 15px;
+    background:
+        linear-gradient(
+            135deg,
+            #111722,
+            #0a0d12
+        );
+}
+
+.upgrade h3 {
+    margin: 0 0 7px;
+}
+
+.upgrade p {
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+.pricing-grid {
+    display: grid;
+    grid-template-columns:
+        repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    padding: 22px;
+}
+
+.price-card {
+    border: 1px solid var(--border);
+    border-radius: 15px;
+    padding: 22px;
+    background: #0a0e14;
+}
+
+.price-card.featured {
+    border-color: #687486;
+}
+
+.price {
+    font-size: 31px;
+    font-weight: 900;
+    margin: 15px 0;
+}
+
+.price span {
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: normal;
+}
+
+.feature-list {
+    color: var(--muted);
+    line-height: 2;
+    padding-left: 20px;
+    min-height: 135px;
+}
+
+.advanced {
+    display: none;
+}
+
+.builder-grid {
+    display: grid;
+    grid-template-columns:
+        repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding: 22px;
+}
+
+.builder-section {
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 15px;
+    background: #0a0e14;
+}
+
+.builder-section h3 {
     margin-top: 0;
 }
 
-.result-line {
-    display: flex;
-    justify-content: space-between;
-    gap: 20px;
-    padding: 8px 0;
-    border-bottom: 1px solid #202631;
+.builder-input {
+    width: 100%;
+    background: #080b10;
+    color: white;
+    border: 1px solid var(--border);
+    padding: 10px;
+    border-radius: 8px;
+    margin: 5px 0;
 }
 
-.result-line:last-child {
-    border-bottom: 0;
+.builder-item {
+    border: 1px solid var(--border);
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 12px;
 }
 
-.muted {
-    color: #8993a3;
+.remove-button {
+    float: right;
+    background: transparent;
+    border: none;
+    color: var(--red);
 }
 
-footer {
-    color: #677181;
-    padding: 50px 0;
+.footer {
+    border-top: 1px solid var(--border);
+    padding: 30px 24px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.disclaimer {
+    max-width: 850px;
+    margin: 30px auto 0;
+    color: #707a88;
+    font-size: 11px;
+    line-height: 1.6;
     text-align: center;
 }
 
 @media (max-width: 800px) {
 
-    .grid,
-    .results-grid {
-        grid-template-columns: 1fr;
-    }
-
     .topbar {
         padding: 0 16px;
     }
 
-    .container {
-        width: min(100% - 20px, 1200px);
+    .hero {
+        padding-top: 60px;
     }
 
-    .message {
-        max-width: 94%;
+    .results-grid {
+        grid-template-columns:
+            repeat(2, minmax(0, 1fr));
+    }
+
+    .pricing-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .builder-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .chat-row {
+        flex-direction: column;
+    }
+
+    .hero h1 {
+        letter-spacing: -2px;
     }
 }
 
 </style>
-
 </head>
 
 <body>
 
 <header class="topbar">
 
-    <div class="logo">THETA</div>
+    <div class="logo">
+        THETA
+    </div>
 
     <div class="status">
         ● ENGINE ONLINE
@@ -1306,451 +1556,702 @@ footer {
 </header>
 
 
-<main class="container">
-
 <section class="hero">
 
+    <div class="eyebrow">
+        Technology Discovery Engine
+    </div>
+
     <h1>
-        Design something better.
+        Describe a problem.<br>
+        Discover a design.
     </h1>
 
     <p>
-        Describe what you want to build. THETA converts the idea into an
-        engineering model, searches thousands of possible designs, and
-        returns the strongest candidates.
+        THETA explores engineering design spaces,
+        searches possible configurations, and identifies
+        promising designs automatically.
     </p>
-
-    <div class="modebar">
-
-        <button
-            id="beginnerMode"
-            class="modebutton active"
-            onclick="showMode('beginner')"
-        >
-            Beginner
-        </button>
-
-        <button
-            id="advancedMode"
-            class="modebutton"
-            onclick="showMode('advanced')"
-        >
-            Advanced
-        </button>
-
-    </div>
 
 </section>
 
 
-<section id="beginnerPanel" class="panel">
+<div class="modebar">
 
-    <h2>
-        Tell THETA what you want to build
-    </h2>
+    <button
+        id="beginnerModeButton"
+        class="mode-button active"
+        onclick="showMode('beginner')"
+    >
+        Beginner
+    </button>
 
-    <div class="chat">
+    <button
+        id="advancedModeButton"
+        class="mode-button"
+        onclick="showMode('advanced')"
+    >
+        Advanced
+    </button>
 
-        <div id="messages" class="messages">
+</div>
 
-            <div class="message theta">
 
-                Tell me what you want to design.
+<main class="main">
 
-                <br>
-                <br>
 
-                <strong>
-                    "Design a lightweight beam that can hold 500 N."
-                </strong>
+<!-- ====================================================== -->
+<!-- BEGINNER PRODUCT -->
+<!-- ====================================================== -->
+
+<section id="beginnerPanel">
+
+    <div class="panel">
+
+        <div class="panel-header">
+
+            <h2>
+                THETA Design Assistant
+            </h2>
+
+            <p>
+                Describe what you want to design in normal language.
+            </p>
+
+        </div>
+
+
+        <div
+            id="messages"
+            class="chat"
+        ></div>
+
+
+        <div class="input-area">
+
+            <div class="chat-row">
+
+                <input
+                    id="chatInput"
+                    class="chat-input"
+                    placeholder="Example: Design a lightweight beam that can hold 500 N."
+                    onkeydown="handleChatKey(event)"
+                >
+
+                <button
+                    class="primary-button"
+                    onclick="sendChat()"
+                >
+                    Discover
+                </button>
+
+            </div>
+
+
+            <div class="quick-buttons">
+
+                <button
+                    class="quick-button"
+                    onclick="loadExample('beam')"
+                >
+                    Beam
+                </button>
+
+                <button
+                    class="quick-button"
+                    onclick="loadExample('spring')"
+                >
+                    Spring
+                </button>
+
+                <button
+                    class="quick-button"
+                    onclick="loadExample('drone')"
+                >
+                    Drone
+                </button>
+
+                <button
+                    class="quick-button"
+                    onclick="loadExample('bracket')"
+                >
+                    Bracket
+                </button>
+
+                <button
+                    class="quick-button"
+                    onclick="resetChat()"
+                >
+                    Reset Chat
+                </button>
 
             </div>
 
         </div>
 
-        <div class="chatrow">
-
-            <input
-                id="chatInput"
-                placeholder="Describe your engineering problem..."
-                onkeydown="if(event.key === 'Enter') sendChat()"
-            >
-
-            <button
-                class="primary"
-                onclick="sendChat()"
-            >
-                Send
-            </button>
-
-            <button
-                class="secondary"
-                onclick="resetChat()"
-            >
-                Reset Chat
-            </button>
-
-        </div>
-
     </div>
 
-
-    <div class="example-buttons">
-
-        <button
-            class="secondary"
-            onclick="useExample('beam')"
-        >
-            Beam
-        </button>
-
-        <button
-            class="secondary"
-            onclick="useExample('spring')"
-        >
-            Spring
-        </button>
-
-        <button
-            class="secondary"
-            onclick="useExample('drone')"
-        >
-            Drone
-        </button>
-
-        <button
-            class="secondary"
-            onclick="useExample('bracket')"
-        >
-            Bracket
-        </button>
-
-    </div>
-
-</section>
-
-
-<section id="reviewPanel" class="panel hidden">
-
-    <div class="section-title">
-
-        <h2>
-            Review Engineering Model
-        </h2>
-
-        <button
-            class="secondary"
-            onclick="openAdvancedEditor()"
-        >
-            Edit Model
-        </button>
-
-    </div>
 
     <div
-        id="review"
-        class="review"
-    ></div>
-
-    <br>
-
-    <button
-        class="primary"
-        onclick="optimizeCurrent()"
+        id="reviewPanel"
+        class="panel"
+        style="display:none"
     >
-        RUN THETA
-    </button>
+
+        <div class="panel-header">
+
+            <h2>
+                Design Model
+            </h2>
+
+            <p>
+                THETA interpreted your engineering request.
+            </p>
+
+        </div>
+
+        <div id="reviewBody" class="result-body"></div>
+
+    </div>
+
+
+    <div
+        id="resultsPanel"
+        class="panel"
+        style="display:none"
+    >
+
+        <div class="panel-header">
+
+            <h2>
+                Discovery Results
+            </h2>
+
+            <p>
+                THETA searched the design space.
+            </p>
+
+        </div>
+
+        <div
+            id="resultsBody"
+            class="result-body"
+        ></div>
+
+    </div>
 
 </section>
 
 
-<section id="resultsPanel" class="panel hidden">
+<!-- ====================================================== -->
+<!-- ADVANCED -->
+<!-- ====================================================== -->
 
-    <h2>
-        THETA Results
-    </h2>
+<section
+    id="advancedPanel"
+    class="advanced"
+>
 
-    <div id="results"></div>
+    <div class="panel">
+
+        <div class="panel-header">
+
+            <h2>
+                Advanced Design Builder
+            </h2>
+
+            <p>
+                Define variables, equations, constraints and objectives.
+            </p>
+
+        </div>
+
+
+        <div class="builder-grid">
+
+            <div class="builder-section">
+
+                <h3>Variables</h3>
+
+                <input
+                    id="variableName"
+                    class="builder-input"
+                    placeholder="Name e.g. width"
+                >
+
+                <input
+                    id="variableMin"
+                    class="builder-input"
+                    type="number"
+                    placeholder="Minimum"
+                >
+
+                <input
+                    id="variableMax"
+                    class="builder-input"
+                    type="number"
+                    placeholder="Maximum"
+                >
+
+                <input
+                    id="variableUnit"
+                    class="builder-input"
+                    placeholder="Unit"
+                >
+
+                <button
+                    class="secondary-button"
+                    onclick="addVariable()"
+                >
+                    Add Variable
+                </button>
+
+                <div id="variableList"></div>
+
+            </div>
+
+
+            <div class="builder-section">
+
+                <h3>Equations</h3>
+
+                <input
+                    id="equationName"
+                    class="builder-input"
+                    placeholder="Result name"
+                >
+
+                <input
+                    id="equationExpression"
+                    class="builder-input"
+                    placeholder="Expression e.g. width * height"
+                >
+
+                <input
+                    id="equationUnit"
+                    class="builder-input"
+                    placeholder="Unit"
+                >
+
+                <button
+                    class="secondary-button"
+                    onclick="addEquation()"
+                >
+                    Add Equation
+                </button>
+
+                <div id="equationList"></div>
+
+            </div>
+
+
+            <div class="builder-section">
+
+                <h3>Constraints</h3>
+
+                <input
+                    id="constraintExpression"
+                    class="builder-input"
+                    placeholder="Example: stress <= 200000000"
+                >
+
+                <button
+                    class="secondary-button"
+                    onclick="addConstraint()"
+                >
+                    Add Constraint
+                </button>
+
+                <div id="constraintList"></div>
+
+            </div>
+
+
+            <div class="builder-section">
+
+                <h3>Objective</h3>
+
+                <input
+                    id="objectiveExpression"
+                    class="builder-input"
+                    placeholder="Example: mass"
+                >
+
+                <select
+                    id="objectiveDirection"
+                    class="builder-input"
+                >
+
+                    <option value="minimize">
+                        Minimize
+                    </option>
+
+                    <option value="maximize">
+                        Maximize
+                    </option>
+
+                </select>
+
+                <button
+                    class="secondary-button"
+                    onclick="addObjective()"
+                >
+                    Add Objective
+                </button>
+
+                <div id="objectiveList"></div>
+
+            </div>
+
+        </div>
+
+
+        <div
+            style="
+                padding:0 22px 22px;
+                display:flex;
+                gap:10px;
+                flex-wrap:wrap;
+            "
+        >
+
+            <button
+                class="primary-button"
+                onclick="runAdvanced()"
+            >
+                Run Discovery
+            </button>
+
+            <button
+                class="secondary-button"
+                onclick="loadAdvancedExample('beam')"
+            >
+                Load Beam
+            </button>
+
+            <button
+                class="secondary-button"
+                onclick="clearBuilder()"
+            >
+                Clear
+            </button>
+
+        </div>
+
+    </div>
+
+
+    <div
+        id="advancedResultsPanel"
+        class="panel"
+        style="display:none"
+    >
+
+        <div class="panel-header">
+
+            <h2>
+                Advanced Results
+            </h2>
+
+        </div>
+
+        <div
+            id="advancedResults"
+            class="result-body"
+        ></div>
+
+    </div>
 
 </section>
 
 
-<section id="advancedPanel" class="panel hidden">
+<!-- ====================================================== -->
+<!-- PRICING -->
+<!-- ====================================================== -->
 
-    <h2>
-        Advanced Engineering Builder
-    </h2>
+<section class="panel">
 
-    <div class="field">
+    <div class="panel-header">
 
-        <label>
-            Project Name
-        </label>
+        <h2>
+            Unlock THETA
+        </h2>
 
-        <input
-            id="projectName"
-            value="THETA Engineering Project"
-        >
-
-    </div>
-
-    <br>
-
-    <div class="field">
-
-        <label>
-            Description
-        </label>
-
-        <textarea id="projectDescription"></textarea>
+        <p>
+            Start free. Upgrade when you need deeper design exploration.
+        </p>
 
     </div>
 
-    <br>
+
+    <div class="pricing-grid">
 
 
-    <div class="section-title">
+        <div class="price-card">
 
-        <h3>
-            Variables
-        </h3>
+            <div class="eyebrow">
+                Free
+            </div>
 
-        <div class="section-buttons">
+            <div class="price">
+                $0
+            </div>
+
+            <ul class="feature-list">
+
+                <li>Basic design searches</li>
+                <li>Beam designs</li>
+                <li>Spring designs</li>
+                <li>Drone designs</li>
+                <li>Bracket designs</li>
+
+            </ul>
 
             <button
-                class="secondary"
-                onclick="addVariable()"
+                class="secondary-button"
+                onclick="showMode('beginner')"
             >
-                + Variable
-            </button>
-
-            <button
-                class="secondary"
-                onclick="removeVariable()"
-            >
-                − Variable
+                Try THETA
             </button>
 
         </div>
 
-    </div>
 
-    <div id="variables"></div>
+        <div class="price-card featured">
 
+            <div class="eyebrow">
+                THETA Pro
+            </div>
 
-    <div class="section-title">
+            <div class="price">
+                $9.99
+                <span>/month</span>
+            </div>
 
-        <h3>
-            Equations
-        </h3>
+            <ul class="feature-list">
 
-        <div class="section-buttons">
+                <li>Unlimited searches</li>
+                <li>Advanced optimization</li>
+                <li>Design comparisons</li>
+                <li>Parameter exploration</li>
+                <li>Engineering reports</li>
 
-            <button
-                class="secondary"
-                onclick="addEquation()"
-            >
-                + Equation
-            </button>
-
-            <button
-                class="secondary"
-                onclick="removeEquation()"
-            >
-                − Equation
-            </button>
-
-        </div>
-
-    </div>
-
-    <div id="equations"></div>
-
-
-    <div class="section-title">
-
-        <h3>
-            Constraints
-        </h3>
-
-        <div class="section-buttons">
+            </ul>
 
             <button
-                class="secondary"
-                onclick="addConstraint()"
+                class="primary-button"
+                onclick="upgrade('pro')"
             >
-                + Constraint
-            </button>
-
-            <button
-                class="secondary"
-                onclick="removeConstraint()"
-            >
-                − Constraint
+                Upgrade to Pro
             </button>
 
         </div>
 
-    </div>
 
-    <div id="constraints"></div>
+        <div class="price-card">
 
+            <div class="eyebrow">
+                Engineer
+            </div>
 
-    <div class="section-title">
+            <div class="price">
+                $29.99
+                <span>/month</span>
+            </div>
 
-        <h3>
-            Objectives
-        </h3>
+            <ul class="feature-list">
 
-        <div class="section-buttons">
+                <li>Everything in Pro</li>
+                <li>Large optimization searches</li>
+                <li>Custom models</li>
+                <li>Batch design exploration</li>
+                <li>Advanced constraints</li>
+
+            </ul>
 
             <button
-                class="secondary"
-                onclick="addObjective()"
+                class="primary-button"
+                onclick="upgrade('engineer')"
             >
-                + Objective
-            </button>
-
-            <button
-                class="secondary"
-                onclick="removeObjective()"
-            >
-                − Objective
+                Upgrade to Engineer
             </button>
 
         </div>
 
-    </div>
-
-    <div id="objectives"></div>
-
-
-    <br>
-
-    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-
-        <button
-            class="primary"
-            onclick="runAdvanced()"
-        >
-            RUN THETA
-        </button>
-
-        <button
-            class="secondary"
-            onclick="loadExample('beam')"
-        >
-            Load Beam
-        </button>
-
-        <button
-            class="secondary"
-            onclick="loadExample('spring')"
-        >
-            Load Spring
-        </button>
-
-        <button
-            class="secondary"
-            onclick="loadExample('drone')"
-        >
-            Load Drone
-        </button>
-
-        <button
-            class="secondary"
-            onclick="loadExample('bracket')"
-        >
-            Load Bracket
-        </button>
-
-        <button
-            class="secondary"
-            onclick="clearBuilder()"
-        >
-            Clear
-        </button>
 
     </div>
 
 </section>
+
+
+<div class="disclaimer">
+
+    THETA is a preliminary engineering design exploration tool.
+    Results are computational explorations and should be independently
+    verified before being used in real-world, safety-critical,
+    structural, aerospace, or other professional applications.
+
+</div>
+
 
 </main>
 
 
-<footer>
-    THETA Technology Discovery Engine
+<footer class="footer">
+
+    THETA TECHNOLOGY DISCOVERY ENGINE
+
+    <br><br>
+
+    Built for engineering exploration.
+
 </footer>
 
 
 <script>
 
 let currentModel = null;
+let currentOptimization = null;
+
+const QUICK_EXAMPLES = {
+
+    beam:
+        "Design a lightweight beam that can hold 500 N.",
+
+    spring:
+        "Design a lightweight spring for 100 N.",
+
+    drone:
+        "Design a lightweight drone.",
+
+    bracket:
+        "Design a lightweight mounting bracket."
+
+};
+
+
+const EXAMPLE_PROMPTS = [
+
+    "Design a lightweight beam that can hold 500 N.",
+
+    "Design a lightweight beam that can hold 1000 N over 2 meters with a maximum stress of 200 MPa.",
+
+    "Design a cantilever beam for a 750 N load over 1.5 meters.",
+
+    "Design a lightweight beam that can hold 250 N.",
+
+    "Design a lightweight spring for 100 N.",
+
+    "Design a compact spring for 250 N.",
+
+    "Design a lightweight spring for 50 N.",
+
+    "Design a spring that can handle 500 N.",
+
+    "Design a lightweight drone.",
+
+    "Design a drone with a lightweight frame and high payload capacity.",
+
+    "Design a compact quadcopter.",
+
+    "Design a lightweight UAV.",
+
+    "Design a lightweight mounting bracket.",
+
+    "Design a thin mounting plate.",
+
+    "Design a lightweight structural mount.",
+
+    "Design a small mounting bracket."
+
+];
 
 
 function escapeHtml(value) {
 
     return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
 
 }
 
 
-function showMode(mode) {
+function formatNumber(value) {
 
-    const beginner =
-        document.getElementById("beginnerPanel");
-
-    const advanced =
-        document.getElementById("advancedPanel");
-
-    const beginnerButton =
-        document.getElementById("beginnerMode");
-
-    const advancedButton =
-        document.getElementById("advancedMode");
-
-
-    if (mode === "beginner") {
-
-        beginner.classList.remove("hidden");
-        advanced.classList.add("hidden");
-
-        beginnerButton.classList.add("active");
-        advancedButton.classList.remove("active");
-
-    } else {
-
-        beginner.classList.add("hidden");
-        advanced.classList.remove("hidden");
-
-        beginnerButton.classList.remove("active");
-        advancedButton.classList.add("active");
-
+    if (
+        value === null ||
+        value === undefined ||
+        !Number.isFinite(Number(value))
+    ) {
+        return "—";
     }
 
+    const number = Number(value);
+
+    if (
+        Math.abs(number) >= 1000000 ||
+        (
+            Math.abs(number) > 0 &&
+            Math.abs(number) < 0.001
+        )
+    ) {
+        return number.toExponential(3);
+    }
+
+    return number.toPrecision(6).replace(
+        /0+$/,
+        ""
+    ).replace(
+        /\.$/,
+        ""
+    );
+
 }
 
 
-function addMessage(text, type) {
+function addMessage(sender, text) {
 
     const messages =
         document.getElementById("messages");
 
-    const div =
+    const wrapper =
         document.createElement("div");
 
-    div.className =
-        "message " + type;
+    wrapper.className =
+        "message " +
+        (
+            sender === "user"
+                ? "user"
+                : "ai"
+        );
 
-    div.innerHTML =
+    const label =
+        document.createElement("div");
+
+    label.className =
+        "message-label";
+
+    label.textContent =
+        sender === "user"
+            ? "YOU"
+            : "THETA";
+
+    const bubble =
+        document.createElement("div");
+
+    bubble.className =
+        "message-bubble";
+
+    bubble.innerHTML =
         escapeHtml(text);
 
-    messages.appendChild(div);
+    wrapper.appendChild(label);
+    wrapper.appendChild(bubble);
+
+    messages.appendChild(wrapper);
 
     messages.scrollTop =
         messages.scrollHeight;
@@ -1758,46 +2259,171 @@ function addMessage(text, type) {
 }
 
 
-function resetChat() {
+function addExampleChoices(
+    examples,
+    heading = "Try another design"
+) {
 
     const messages =
         document.getElementById("messages");
 
-    const input =
-        document.getElementById("chatInput");
+    const box =
+        document.createElement("div");
 
-    messages.innerHTML = `
-        <div class="message theta">
+    box.className =
+        "example-box";
 
-            Tell me what you want to design.
+    const title =
+        document.createElement("div");
 
-            <br>
-            <br>
+    title.className =
+        "example-title";
 
-            <strong>
-                "Design a lightweight beam that can hold 500 N."
-            </strong>
+    title.textContent =
+        heading;
 
-        </div>
-    `;
+    box.appendChild(title);
 
-    input.value = "";
+    examples.forEach(example => {
 
-    currentModel = null;
+        const button =
+            document.createElement("button");
+
+        button.className =
+            "example-choice";
+
+        button.textContent =
+            example;
+
+        button.onclick = () => {
+
+            document.getElementById(
+                "chatInput"
+            ).value = example;
+
+            sendChat();
+
+        };
+
+        box.appendChild(button);
+
+    });
+
+    messages.appendChild(box);
+
+}
+
+
+function resetChat() {
+
+    document.getElementById(
+        "messages"
+    ).innerHTML = "";
+
+    document.getElementById(
+        "chatInput"
+    ).value = "";
 
     document.getElementById(
         "reviewPanel"
-    ).classList.add(
-        "hidden"
-    );
+    ).style.display = "none";
 
     document.getElementById(
         "resultsPanel"
-    ).classList.add(
-        "hidden"
+    ).style.display = "none";
+
+    currentModel = null;
+    currentOptimization = null;
+
+    addMessage(
+        "ai",
+        "Welcome to THETA.\n\n" +
+        "Describe an engineering problem and " +
+        "I will translate it into a design model " +
+        "and search the design space."
     );
 
-    input.focus();
+    addExampleChoices(
+        [
+            "Design a lightweight beam that can hold 500 N.",
+            "Design a lightweight spring for 100 N.",
+            "Design a lightweight drone."
+        ],
+        "Start with an example"
+    );
+
+}
+
+
+function handleChatKey(event) {
+
+    if (event.key === "Enter") {
+        event.preventDefault();
+        sendChat();
+    }
+
+}
+
+
+async function loadExample(name) {
+
+    const text =
+        QUICK_EXAMPLES[name];
+
+    if (!text) {
+        return;
+    }
+
+    showMode("beginner");
+
+    document.getElementById(
+        "chatInput"
+    ).value = text;
+
+    await sendChat();
+
+}
+
+
+function shuffleArray(array) {
+
+    const copy =
+        [...array];
+
+    for (
+        let i = copy.length - 1;
+        i > 0;
+        i--
+    ) {
+
+        const j =
+            Math.floor(
+                Math.random() * (i + 1)
+            );
+
+        [
+            copy[i],
+            copy[j]
+        ] = [
+            copy[j],
+            copy[i]
+        ];
+
+    }
+
+    return copy;
+
+}
+
+
+function getRandomExamples(count = 3) {
+
+    return shuffleArray(
+        EXAMPLE_PROMPTS
+    ).slice(
+        0,
+        count
+    );
 
 }
 
@@ -1805,7 +2431,9 @@ function resetChat() {
 async function sendChat() {
 
     const input =
-        document.getElementById("chatInput");
+        document.getElementById(
+            "chatInput"
+        );
 
     const text =
         input.value.trim();
@@ -1815,17 +2443,16 @@ async function sendChat() {
     }
 
     addMessage(
-        text,
-        "user"
+        "user",
+        text
     );
 
     input.value = "";
 
     addMessage(
-        "Building engineering model...",
-        "theta"
+        "ai",
+        "Analyzing engineering problem..."
     );
-
 
     try {
 
@@ -1848,11 +2475,21 @@ async function sendChat() {
             await response.json();
 
         const messages =
-            document.getElementById("messages");
+            document.getElementById(
+                "messages"
+            );
 
-        if (messages.lastElementChild) {
-            messages.removeChild(
-                messages.lastElementChild
+        const lastMessage =
+            messages.lastElementChild;
+
+        if (lastMessage) {
+            lastMessage.remove();
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                data.error ||
+                "Could not interpret request."
             );
         }
 
@@ -1860,52 +2497,39 @@ async function sendChat() {
             data.model;
 
         addMessage(
-            "I created an engineering model for this problem. Review it below, then run THETA.",
-            "theta"
+            "ai",
+            "I interpreted your request as " +
+            currentModel.name +
+            ".\n\n" +
+            "I can now search the design space " +
+            "for promising configurations."
         );
 
         renderReview();
 
+        await optimizeCurrent();
+
     } catch (error) {
 
+        const messages =
+            document.getElementById(
+                "messages"
+            );
+
+        const lastMessage =
+            messages.lastElementChild;
+
+        if (lastMessage) {
+            lastMessage.remove();
+        }
+
         addMessage(
-            "THETA could not reach the local engine.",
-            "theta"
+            "ai",
+            "Error: " +
+            error.message
         );
 
     }
-
-}
-
-
-async function useExample(name) {
-
-    let text = "";
-
-    if (name === "beam") {
-        text =
-            "Design a lightweight beam that can hold 500 N.";
-    }
-
-    if (name === "spring") {
-        text =
-            "Design a lightweight spring for 100 N.";
-    }
-
-    if (name === "drone") {
-        text =
-            "Design a lightweight drone.";
-    }
-
-    if (name === "bracket") {
-        text =
-            "Design a lightweight mounting bracket.";
-    }
-
-    document.getElementById("chatInput").value =
-        text;
-
-    await sendChat();
 
 }
 
@@ -1917,126 +2541,122 @@ function renderReview() {
     }
 
     const panel =
-        document.getElementById("reviewPanel");
+        document.getElementById(
+            "reviewPanel"
+        );
 
-    const review =
-        document.getElementById("review");
+    const body =
+        document.getElementById(
+            "reviewBody"
+        );
 
-    panel.classList.remove("hidden");
+    panel.style.display =
+        "block";
 
     let html = "";
 
-    html +=
-        "<h3>" +
-        escapeHtml(currentModel.name) +
-        "</h3>";
+    html += `
+        <h3>
+            ${escapeHtml(currentModel.name)}
+        </h3>
+    `;
 
+    html += `
+        <p style="color:#8e99a8">
+            ${escapeHtml(
+                currentModel.description
+            )}
+        </p>
+    `;
 
-    if (currentModel.description) {
+    html += `
+        <h4>Variables</h4>
+    `;
 
-        html +=
-            "<p class='muted'>" +
-            escapeHtml(currentModel.description) +
-            "</p>";
-
-    }
-
-
-    html +=
-        "<div class='review-item'>" +
-        "<strong>Variables</strong>" +
-        "</div>";
-
-
-    for (
-        const variable
-        of currentModel.variables
+    if (
+        currentModel.variables.length === 0
     ) {
 
-        html +=
-            "<div class='review-item'>" +
-            escapeHtml(variable.name) +
-            " = [" +
-            escapeHtml(variable.min) +
-            ", " +
-            escapeHtml(variable.max) +
-            "] " +
-            escapeHtml(variable.unit || "") +
-            "</div>";
+        html += `
+            <p>No variables.</p>
+        `;
+
+    } else {
+
+        html += `
+            <table class="design-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Minimum</th>
+                        <th>Maximum</th>
+                        <th>Unit</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        currentModel.variables.forEach(variable => {
+
+            html += `
+                <tr>
+                    <td>${escapeHtml(
+                        variable.name
+                    )}</td>
+                    <td>${formatNumber(
+                        variable.min
+                    )}</td>
+                    <td>${formatNumber(
+                        variable.max
+                    )}</td>
+                    <td>${escapeHtml(
+                        variable.unit
+                    )}</td>
+                </tr>
+            `;
+
+        });
+
+        html += `
+                </tbody>
+            </table>
+        `;
 
     }
 
+    html += `
+        <h4>Constraints</h4>
+    `;
 
-    html +=
-        "<div class='review-item'>" +
-        "<strong>Equations</strong>" +
-        "</div>";
-
-
-    for (
-        const equation
-        of currentModel.equations
+    if (
+        currentModel.constraints.length === 0
     ) {
 
-        html +=
-            "<div class='review-item'>" +
-            escapeHtml(equation.name) +
-            " = " +
-            escapeHtml(equation.expression) +
-            "</div>";
+        html += `
+            <p style="color:#8e99a8">
+                No explicit constraints.
+            </p>
+        `;
+
+    } else {
+
+        currentModel.constraints.forEach(
+            constraint => {
+
+                html += `
+                    <div class="builder-item">
+                        ${escapeHtml(
+                            constraint.expression
+                        )}
+                    </div>
+                `;
+
+            }
+        );
 
     }
 
-
-    html +=
-        "<div class='review-item'>" +
-        "<strong>Constraints</strong>" +
-        "</div>";
-
-
-    for (
-        const constraint
-        of currentModel.constraints
-    ) {
-
-        html +=
-            "<div class='review-item'>" +
-            escapeHtml(constraint.name) +
-            ": " +
-            escapeHtml(constraint.expression) +
-            " " +
-            escapeHtml(constraint.sense) +
-            " " +
-            escapeHtml(constraint.limit) +
-            "</div>";
-
-    }
-
-
-    html +=
-        "<div class='review-item'>" +
-        "<strong>Objectives</strong>" +
-        "</div>";
-
-
-    for (
-        const objective
-        of currentModel.objectives
-    ) {
-
-        html +=
-            "<div class='review-item'>" +
-            escapeHtml(objective.name) +
-            ": " +
-            escapeHtml(objective.direction) +
-            " " +
-            escapeHtml(objective.expression) +
-            "</div>";
-
-    }
-
-
-    review.innerHTML =
+    body.innerHTML =
         html;
 
 }
@@ -2048,26 +2668,25 @@ async function optimizeCurrent() {
         return;
     }
 
-    await runOptimization(
-        currentModel
-    );
+    const panel =
+        document.getElementById(
+            "resultsPanel"
+        );
 
-}
+    const body =
+        document.getElementById(
+            "resultsBody"
+        );
 
+    panel.style.display =
+        "block";
 
-async function runOptimization(model) {
-
-    const resultsPanel =
-        document.getElementById("resultsPanel");
-
-    const results =
-        document.getElementById("results");
-
-    resultsPanel.classList.remove("hidden");
-
-    results.innerHTML =
-        "<p class='muted'>THETA is searching the design space...</p>";
-
+    body.innerHTML = `
+        <p style="color:#8e99a8">
+            THETA is searching hundreds of possible
+            designs...
+        </p>
+    `;
 
     try {
 
@@ -2080,957 +2699,1034 @@ async function runOptimization(model) {
                         "Content-Type":
                             "application/json"
                     },
-                    body: JSON.stringify(model)
+                    body: JSON.stringify({
+                        model:
+                            currentModel,
+                        mode:
+                            "beginner"
+                    })
                 }
             );
 
         const data =
             await response.json();
 
-        if (!data.success) {
-
-            results.innerHTML =
-                "<p>" +
-                escapeHtml(
-                    data.error ||
-                    "Optimization failed."
-                ) +
-                "</p>";
-
-            return;
+        if (!response.ok) {
+            throw new Error(
+                data.error ||
+                "Optimization failed."
+            );
         }
 
-        renderResults(data);
+        currentOptimization =
+            data;
+
+        renderResults(
+            data,
+            body
+        );
 
     } catch (error) {
 
-        results.innerHTML =
-            "<p>Optimization request failed.</p>";
+        body.innerHTML = `
+            <div class="upgrade">
+                <h3>
+                    Optimization Error
+                </h3>
+
+                <p>
+                    ${escapeHtml(
+                        error.message
+                    )}
+                </p>
+            </div>
+        `;
 
     }
 
 }
 
 
-function renderResults(data) {
-
-    const results =
-        document.getElementById("results");
+function renderResults(
+    data,
+    container
+) {
 
     const best =
         data.best;
 
     let html = "";
 
-    html +=
-        "<div class='results-grid'>";
+    html += `
+        <div class="results-grid">
+
+            <div class="stat">
+
+                <div class="stat-label">
+                    Objective
+                </div>
+
+                <div class="stat-value">
+                    ${formatNumber(
+                        best.objective
+                    )}
+                </div>
+
+            </div>
+
+            <div class="stat">
+
+                <div class="stat-label">
+                    Constraint
+                </div>
+
+                <div class="stat-value ${
+                    best.passed
+                        ? "pass"
+                        : "fail"
+                }">
+
+                    ${
+                        best.passed
+                            ? "PASS"
+                            : "FAIL"
+                    }
+
+                </div>
+
+            </div>
+
+            <div class="stat">
+
+                <div class="stat-label">
+                    Generations
+                </div>
+
+                <div class="stat-value">
+                    ${data.generations}
+                </div>
+
+            </div>
+
+            <div class="stat">
+
+                <div class="stat-label">
+                    Designs Searched
+                </div>
+
+                <div class="stat-value">
+                    ${data.population_size}
+                </div>
+
+            </div>
+
+        </div>
+    `;
 
 
-    html +=
-        "<div class='result-card'>" +
-        "<h3>Best Design</h3>";
+    html += `
+        <h3>
+            Best Design
+        </h3>
+    `;
 
+    html += `
+        <table class="design-table">
 
-    for (
-        const [name, value]
-        of Object.entries(best.design)
-    ) {
+            <thead>
 
-        html +=
-            "<div class='result-line'>" +
-            "<span>" +
-            escapeHtml(name) +
-            "</span>" +
-            "<strong>" +
-            Number(value).toPrecision(7) +
-            "</strong>" +
-            "</div>";
+                <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                    <th>Unit</th>
+                </tr>
 
-    }
+            </thead>
 
+            <tbody>
+    `;
 
-    html +=
-        "</div>";
+    currentModel.variables.forEach(
+        variable => {
 
+            html += `
+                <tr>
 
-    html +=
-        "<div class='result-card'>" +
-        "<h3>Performance</h3>";
+                    <td>
+                        ${escapeHtml(
+                            variable.name
+                        )}
+                    </td>
 
+                    <td>
+                        ${formatNumber(
+                            best.design[
+                                variable.name
+                            ]
+                        )}
+                    </td>
 
-    for (
-        const objective
-        of best.objectives
-    ) {
+                    <td>
+                        ${escapeHtml(
+                            variable.unit
+                        )}
+                    </td>
 
-        html +=
-            "<div class='result-line'>" +
-            "<span>" +
-            escapeHtml(objective.name) +
-            "</span>" +
-            "<strong>" +
-            Number(objective.value).toPrecision(7) +
-            "</strong>" +
-            "</div>";
+                </tr>
+            `;
 
-    }
-
-
-    html +=
-        "<div class='result-line'>" +
-        "<span>Constraint violation</span>" +
-        "<strong>" +
-        Number(
-            best.total_violation
-        ).toPrecision(7) +
-        "</strong>" +
-        "</div>";
-
-
-    html +=
-        "</div>" +
-        "</div>";
-
-
-    html +=
-        "<br>" +
-        "<div class='result-card'>" +
-        "<h3>Search Statistics</h3>" +
-
-
-        "<div class='result-line'>" +
-        "<span>Evaluations</span>" +
-        "<strong>" +
-        escapeHtml(data.evaluated) +
-        "</strong>" +
-        "</div>" +
-
-
-        "<div class='result-line'>" +
-        "<span>Feasible designs</span>" +
-        "<strong>" +
-        escapeHtml(data.feasible_count) +
-        "</strong>" +
-        "</div>" +
-
-
-        "</div>";
-
-
-    html +=
-        "<br>" +
-        "<div class='result-card'>" +
-        "<h3>Calculated Values</h3>";
-
-
-    for (
-        const [name, value]
-        of Object.entries(best.values)
-    ) {
-
-        if (best.design[name] !== undefined) {
-            continue;
         }
+    );
 
-        html +=
-            "<div class='result-line'>" +
-            "<span>" +
-            escapeHtml(name) +
-            "</span>" +
-            "<strong>" +
-            Number(value).toPrecision(7) +
-            "</strong>" +
-            "</div>";
-
-    }
+    html += `
+            </tbody>
+        </table>
+    `;
 
 
-    html +=
-        "</div>";
+    html += `
+        <h3>
+            Calculated Results
+        </h3>
+    `;
+
+    html += `
+        <table class="design-table">
+
+            <thead>
+
+                <tr>
+                    <th>Result</th>
+                    <th>Value</th>
+                    <th>Unit</th>
+                </tr>
+
+            </thead>
+
+            <tbody>
+    `;
+
+    currentModel.equations.forEach(
+        equation => {
+
+            html += `
+                <tr>
+
+                    <td>
+                        ${escapeHtml(
+                            equation.name
+                        )}
+                    </td>
+
+                    <td>
+                        ${formatNumber(
+                            best.results[
+                                equation.name
+                            ]
+                        )}
+                    </td>
+
+                    <td>
+                        ${escapeHtml(
+                            equation.unit
+                        )}
+                    </td>
+
+                </tr>
+            `;
+
+        }
+    );
+
+    html += `
+            </tbody>
+        </table>
+    `;
 
 
-    html +=
-        "<br>" +
-        "<div class='result-card'>" +
-        "<h3>Top Candidates</h3>";
+    html += `
+        <div class="upgrade">
+
+            <h3>
+                Want deeper design exploration?
+            </h3>
+
+            <p>
+                THETA Pro unlocks larger searches,
+                advanced optimization, design comparison,
+                and engineering reports.
+            </p>
+
+            <button
+                class="primary-button"
+                onclick="upgrade('pro')"
+            >
+                Upgrade to THETA Pro — $9.99/month
+            </button>
+
+        </div>
+    `;
 
 
-    data.top
-        .slice(0, 10)
-        .forEach(
-            function(item, index) {
+    html += `
+        <h3>
+            Alternative Designs
+        </h3>
+    `;
 
-                html +=
-                    "<div class='result-line'>" +
-                    "<span>" +
-                    "Design " +
-                    (index + 1) +
-                    "</span>" +
-                    "<strong>";
+    html += `
+        <table class="design-table">
 
-                const parts = [];
+            <thead>
 
-                for (
-                    const [name, value]
-                    of Object.entries(item.design)
-                ) {
+                <tr>
+                    <th>#</th>
+                    <th>Objective</th>
+                    <th>Constraint</th>
+                </tr>
 
-                    parts.push(
-                        escapeHtml(name) +
-                        "=" +
-                        Number(value).toPrecision(4)
-                    );
+            </thead>
 
-                }
+            <tbody>
+    `;
 
-                html +=
-                    parts.join(" | ");
+    data.alternatives.forEach(
+        (result, index) => {
 
-                html +=
-                    "</strong>" +
-                    "</div>";
+            html += `
+                <tr>
 
-            }
-        );
+                    <td>
+                        ${index + 1}
+                    </td>
+
+                    <td>
+                        ${formatNumber(
+                            result.objective
+                        )}
+                    </td>
+
+                    <td class="${
+                        result.passed
+                            ? "pass"
+                            : "fail"
+                    }">
+
+                        ${
+                            result.passed
+                                ? "PASS"
+                                : "FAIL"
+                        }
+
+                    </td>
+
+                </tr>
+            `;
+
+        }
+    );
+
+    html += `
+            </tbody>
+        </table>
+    `;
 
 
-    html +=
-        "</div>";
-
-
-    results.innerHTML =
+    container.innerHTML =
         html;
 
 }
 
 
-function addVariable() {
+function showMode(mode) {
 
-    const container =
-        document.getElementById("variables");
+    const beginner =
+        document.getElementById(
+            "beginnerPanel"
+        );
 
-    const row =
-        document.createElement("div");
+    const advanced =
+        document.getElementById(
+            "advancedPanel"
+        );
 
-    row.className =
-        "builder-row variable-row";
+    const beginnerButton =
+        document.getElementById(
+            "beginnerModeButton"
+        );
 
-    row.innerHTML =
-        '<div class="grid">' +
+    const advancedButton =
+        document.getElementById(
+            "advancedModeButton"
+        );
 
-            '<div class="field">' +
-                '<label>Name</label>' +
-                '<input class="v-name" value="x">' +
-            '</div>' +
+    if (mode === "advanced") {
 
-            '<div class="field">' +
-                '<label>Minimum</label>' +
-                '<input class="v-min" type="number" value="0.1">' +
-            '</div>' +
+        beginner.style.display =
+            "none";
 
-            '<div class="field">' +
-                '<label>Maximum</label>' +
-                '<input class="v-max" type="number" value="10">' +
-            '</div>' +
+        advanced.style.display =
+            "block";
 
-            '<div class="field">' +
-                '<label>Unit</label>' +
-                '<input class="v-unit" value="">' +
-            '</div>' +
+        beginnerButton.classList.remove(
+            "active"
+        );
 
-        '</div>' +
+        advancedButton.classList.add(
+            "active"
+        );
 
-        '<br>' +
+    } else {
 
-        '<button class="danger" onclick="this.parentElement.remove()">' +
-            'Remove' +
-        '</button>';
+        beginner.style.display =
+            "block";
 
-    container.appendChild(row);
+        advanced.style.display =
+            "none";
+
+        advancedButton.classList.remove(
+            "active"
+        );
+
+        beginnerButton.classList.add(
+            "active"
+        );
+
+    }
 
 }
 
 
-function removeVariable() {
+function upgrade(plan) {
 
-    const container =
-        document.getElementById("variables");
+    let url = "";
 
-    const rows =
-        container.querySelectorAll(
-            ".variable-row"
+    if (plan === "pro") {
+
+        url =
+            "__PRO_PAYMENT_LINK__";
+
+    }
+
+    if (plan === "engineer") {
+
+        url =
+            "__ENGINEER_PAYMENT_LINK__";
+
+    }
+
+    if (
+        !url ||
+        url.includes("REPLACE_WITH_YOUR")
+    ) {
+
+        alert(
+            "THETA payments are not connected yet. " +
+            "Add your Stripe Payment Link before launch."
         );
 
-    if (rows.length > 0) {
-        rows[rows.length - 1].remove();
+        return;
     }
+
+    window.location.href =
+        url;
+
+}
+
+
+// ========================================================
+// ADVANCED BUILDER
+// ========================================================
+
+let builderModel = {
+    name: "Custom Technology Design",
+    type: "custom",
+    description: "Custom engineering model.",
+    variables: [],
+    equations: [],
+    constraints: [],
+    objectives: []
+};
+
+
+function addVariable() {
+
+    const name =
+        document.getElementById(
+            "variableName"
+        ).value.trim();
+
+    const min =
+        Number(
+            document.getElementById(
+                "variableMin"
+            ).value
+        );
+
+    const max =
+        Number(
+            document.getElementById(
+                "variableMax"
+            ).value
+        );
+
+    const unit =
+        document.getElementById(
+            "variableUnit"
+        ).value.trim();
+
+    if (
+        !name ||
+        !Number.isFinite(min) ||
+        !Number.isFinite(max) ||
+        max <= min
+    ) {
+
+        alert(
+            "Enter a valid variable name, minimum, and maximum."
+        );
+
+        return;
+    }
+
+    builderModel.variables.push({
+        name: name,
+        min: min,
+        max: max,
+        unit: unit
+    });
+
+    document.getElementById(
+        "variableName"
+    ).value = "";
+
+    document.getElementById(
+        "variableMin"
+    ).value = "";
+
+    document.getElementById(
+        "variableMax"
+    ).value = "";
+
+    document.getElementById(
+        "variableUnit"
+    ).value = "";
+
+    renderBuilderLists();
 
 }
 
 
 function addEquation() {
 
-    const container =
-        document.getElementById("equations");
+    const name =
+        document.getElementById(
+            "equationName"
+        ).value.trim();
 
-    const row =
-        document.createElement("div");
+    const expression =
+        document.getElementById(
+            "equationExpression"
+        ).value.trim();
 
-    row.className =
-        "builder-row equation-row";
+    const unit =
+        document.getElementById(
+            "equationUnit"
+        ).value.trim();
 
-    row.innerHTML =
-        '<div class="grid">' +
+    if (
+        !name ||
+        !expression
+    ) {
 
-            '<div class="field">' +
-                '<label>Name</label>' +
-                '<input class="e-name" value="equation">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Expression</label>' +
-                '<input class="e-expression" value="x+y">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Unit</label>' +
-                '<input class="e-unit" value="">' +
-            '</div>' +
-
-        '</div>' +
-
-        '<br>' +
-
-        '<button class="danger" onclick="this.parentElement.remove()">' +
-            'Remove' +
-        '</button>';
-
-    container.appendChild(row);
-
-}
-
-
-function removeEquation() {
-
-    const container =
-        document.getElementById("equations");
-
-    const rows =
-        container.querySelectorAll(
-            ".equation-row"
+        alert(
+            "Enter an equation name and expression."
         );
 
-    if (rows.length > 0) {
-        rows[rows.length - 1].remove();
+        return;
     }
+
+    builderModel.equations.push({
+        name: name,
+        expression: expression,
+        unit: unit
+    });
+
+    document.getElementById(
+        "equationName"
+    ).value = "";
+
+    document.getElementById(
+        "equationExpression"
+    ).value = "";
+
+    document.getElementById(
+        "equationUnit"
+    ).value = "";
+
+    renderBuilderLists();
 
 }
 
 
 function addConstraint() {
 
-    const container =
-        document.getElementById("constraints");
+    const expression =
+        document.getElementById(
+            "constraintExpression"
+        ).value.trim();
 
-    const row =
-        document.createElement("div");
+    if (!expression) {
 
-    row.className =
-        "builder-row constraint-row";
-
-    row.innerHTML =
-        '<div class="grid">' +
-
-            '<div class="field">' +
-                '<label>Name</label>' +
-                '<input class="c-name" value="Constraint">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Expression</label>' +
-                '<input class="c-expression" value="x">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Relation</label>' +
-                '<select class="c-sense">' +
-                    '<option value="lte">≤</option>' +
-                    '<option value="gte">≥</option>' +
-                    '<option value="eq">=</option>' +
-                '</select>' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Limit</label>' +
-                '<input class="c-limit" type="number" value="10">' +
-            '</div>' +
-
-        '</div>' +
-
-        '<br>' +
-
-        '<button class="danger" onclick="this.parentElement.remove()">' +
-            'Remove' +
-        '</button>';
-
-    container.appendChild(row);
-
-}
-
-
-function removeConstraint() {
-
-    const container =
-        document.getElementById("constraints");
-
-    const rows =
-        container.querySelectorAll(
-            ".constraint-row"
+        alert(
+            "Enter a constraint."
         );
 
-    if (rows.length > 0) {
-        rows[rows.length - 1].remove();
+        return;
     }
+
+    builderModel.constraints.push({
+        expression: expression
+    });
+
+    document.getElementById(
+        "constraintExpression"
+    ).value = "";
+
+    renderBuilderLists();
 
 }
 
 
 function addObjective() {
 
-    const container =
-        document.getElementById("objectives");
-
-    const row =
-        document.createElement("div");
-
-    row.className =
-        "builder-row objective-row";
-
-    row.innerHTML =
-        '<div class="grid">' +
-
-            '<div class="field">' +
-                '<label>Name</label>' +
-                '<input class="o-name" value="Objective">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Expression</label>' +
-                '<input class="o-expression" value="x">' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Direction</label>' +
-                '<select class="o-direction">' +
-                    '<option value="min">Minimize</option>' +
-                    '<option value="max">Maximize</option>' +
-                '</select>' +
-            '</div>' +
-
-            '<div class="field">' +
-                '<label>Weight</label>' +
-                '<input class="o-weight" type="number" value="1">' +
-            '</div>' +
-
-        '</div>' +
-
-        '<br>' +
-
-        '<button class="danger" onclick="this.parentElement.remove()">' +
-            'Remove' +
-        '</button>';
-
-    container.appendChild(row);
-
-}
-
-
-function removeObjective() {
-
-    const container =
-        document.getElementById("objectives");
-
-    const rows =
-        container.querySelectorAll(
-            ".objective-row"
-        );
-
-    if (rows.length > 0) {
-        rows[rows.length - 1].remove();
-    }
-
-}
-
-
-function getBuilderModel() {
-
-    const model = {
-
-        name:
-            document.getElementById(
-                "projectName"
-            ).value,
-
-        description:
-            document.getElementById(
-                "projectDescription"
-            ).value,
-
-        variables: [],
-        equations: [],
-        constraints: [],
-        objectives: []
-
-    };
-
-
-    document
-        .querySelectorAll(".variable-row")
-        .forEach(
-            function(row) {
-
-                model.variables.push({
-
-                    name:
-                        row.querySelector(
-                            ".v-name"
-                        ).value,
-
-                    min:
-                        Number(
-                            row.querySelector(
-                                ".v-min"
-                            ).value
-                        ),
-
-                    max:
-                        Number(
-                            row.querySelector(
-                                ".v-max"
-                            ).value
-                        ),
-
-                    unit:
-                        row.querySelector(
-                            ".v-unit"
-                        ).value
-
-                });
-
-            }
-        );
-
-
-    document
-        .querySelectorAll(".equation-row")
-        .forEach(
-            function(row) {
-
-                model.equations.push({
-
-                    name:
-                        row.querySelector(
-                            ".e-name"
-                        ).value,
-
-                    expression:
-                        row.querySelector(
-                            ".e-expression"
-                        ).value,
-
-                    unit:
-                        row.querySelector(
-                            ".e-unit"
-                        ).value
-
-                });
-
-            }
-        );
-
-
-    document
-        .querySelectorAll(".constraint-row")
-        .forEach(
-            function(row) {
-
-                model.constraints.push({
-
-                    name:
-                        row.querySelector(
-                            ".c-name"
-                        ).value,
-
-                    expression:
-                        row.querySelector(
-                            ".c-expression"
-                        ).value,
-
-                    sense:
-                        row.querySelector(
-                            ".c-sense"
-                        ).value,
-
-                    limit:
-                        Number(
-                            row.querySelector(
-                                ".c-limit"
-                            ).value
-                        )
-
-                });
-
-            }
-        );
-
-
-    document
-        .querySelectorAll(".objective-row")
-        .forEach(
-            function(row) {
-
-                model.objectives.push({
-
-                    name:
-                        row.querySelector(
-                            ".o-name"
-                        ).value,
-
-                    expression:
-                        row.querySelector(
-                            ".o-expression"
-                        ).value,
-
-                    direction:
-                        row.querySelector(
-                            ".o-direction"
-                        ).value,
-
-                    weight:
-                        Number(
-                            row.querySelector(
-                                ".o-weight"
-                            ).value
-                        )
-
-                });
-
-            }
-        );
-
-
-    return model;
-
-}
-
-
-function loadBuilder(model) {
-
-    document.getElementById(
-        "projectName"
-    ).value =
-        model.name ||
-        "THETA Engineering Project";
-
-
-    document.getElementById(
-        "projectDescription"
-    ).value =
-        model.description || "";
-
-
-    document.getElementById(
-        "variables"
-    ).innerHTML = "";
-
-    document.getElementById(
-        "equations"
-    ).innerHTML = "";
-
-    document.getElementById(
-        "constraints"
-    ).innerHTML = "";
-
-    document.getElementById(
-        "objectives"
-    ).innerHTML = "";
-
-
-    for (
-        const variable
-        of model.variables
-    ) {
-
-        addVariable();
-
-        const rows =
-            document.querySelectorAll(
-                ".variable-row"
-            );
-
-        const row =
-            rows[rows.length - 1];
-
-
-        row.querySelector(
-            ".v-name"
-        ).value =
-            variable.name;
-
-
-        row.querySelector(
-            ".v-min"
-        ).value =
-            variable.min;
-
-
-        row.querySelector(
-            ".v-max"
-        ).value =
-            variable.max;
-
-
-        row.querySelector(
-            ".v-unit"
-        ).value =
-            variable.unit || "";
-
-    }
-
-
-    for (
-        const equation
-        of model.equations
-    ) {
-
-        addEquation();
-
-        const rows =
-            document.querySelectorAll(
-                ".equation-row"
-            );
-
-        const row =
-            rows[rows.length - 1];
-
-
-        row.querySelector(
-            ".e-name"
-        ).value =
-            equation.name;
-
-
-        row.querySelector(
-            ".e-expression"
-        ).value =
-            equation.expression;
-
-
-        row.querySelector(
-            ".e-unit"
-        ).value =
-            equation.unit || "";
-
-    }
-
-
-    for (
-        const constraint
-        of model.constraints
-    ) {
-
-        addConstraint();
-
-        const rows =
-            document.querySelectorAll(
-                ".constraint-row"
-            );
-
-        const row =
-            rows[rows.length - 1];
-
-
-        row.querySelector(
-            ".c-name"
-        ).value =
-            constraint.name;
-
-
-        row.querySelector(
-            ".c-expression"
-        ).value =
-            constraint.expression;
-
-
-        row.querySelector(
-            ".c-sense"
-        ).value =
-            constraint.sense;
-
-
-        row.querySelector(
-            ".c-limit"
-        ).value =
-            constraint.limit;
-
-    }
-
-
-    for (
-        const objective
-        of model.objectives
-    ) {
-
-        addObjective();
-
-        const rows =
-            document.querySelectorAll(
-                ".objective-row"
-            );
-
-        const row =
-            rows[rows.length - 1];
-
-
-        row.querySelector(
-            ".o-name"
-        ).value =
-            objective.name;
-
-
-        row.querySelector(
-            ".o-expression"
-        ).value =
-            objective.expression;
-
-
-        row.querySelector(
-            ".o-direction"
-        ).value =
-            objective.direction;
-
-
-        row.querySelector(
-            ".o-weight"
-        ).value =
-            objective.weight;
-
-    }
-
-}
-
-
-function openAdvancedEditor() {
-
-    if (currentModel) {
-        loadBuilder(
-            currentModel
-        );
-    }
-
-    showMode(
-        "advanced"
-    );
-
-}
-
-
-async function loadExample(name) {
-
-    try {
-
-        const response =
-            await fetch(
-                "/example?name=" +
-                encodeURIComponent(name)
-            );
-
-        const data =
-            await response.json();
-
-        currentModel =
-            data.model;
-
-        loadBuilder(
-            currentModel
-        );
-
-    } catch (error) {
+    const expression =
+        document.getElementById(
+            "objectiveExpression"
+        ).value.trim();
+
+    const direction =
+        document.getElementById(
+            "objectiveDirection"
+        ).value;
+
+    if (!expression) {
 
         alert(
-            "Could not load example."
+            "Enter an objective expression."
         );
 
+        return;
     }
+
+    builderModel.objectives = [
+        {
+            expression: expression,
+            direction: direction
+        }
+    ];
+
+    document.getElementById(
+        "objectiveExpression"
+    ).value = "";
+
+    renderBuilderLists();
+
+}
+
+
+function removeVariable(index) {
+
+    builderModel.variables.splice(
+        index,
+        1
+    );
+
+    renderBuilderLists();
+
+}
+
+
+function removeEquation(index) {
+
+    builderModel.equations.splice(
+        index,
+        1
+    );
+
+    renderBuilderLists();
+
+}
+
+
+function removeConstraint(index) {
+
+    builderModel.constraints.splice(
+        index,
+        1
+    );
+
+    renderBuilderLists();
+
+}
+
+
+function removeObjective(index) {
+
+    builderModel.objectives.splice(
+        index,
+        1
+    );
+
+    renderBuilderLists();
+
+}
+
+
+function renderBuilderLists() {
+
+    document.getElementById(
+        "variableList"
+    ).innerHTML =
+        builderModel.variables
+        .map(
+            (item, index) => `
+                <div class="builder-item">
+
+                    <button
+                        class="remove-button"
+                        onclick="removeVariable(${index})"
+                    >
+                        ×
+                    </button>
+
+                    <strong>
+                        ${escapeHtml(item.name)}
+                    </strong>
+
+                    <br>
+
+                    ${formatNumber(item.min)}
+                    →
+                    ${formatNumber(item.max)}
+
+                    ${escapeHtml(item.unit)}
+
+                </div>
+            `
+        )
+        .join("");
+
+
+    document.getElementById(
+        "equationList"
+    ).innerHTML =
+        builderModel.equations
+        .map(
+            (item, index) => `
+                <div class="builder-item">
+
+                    <button
+                        class="remove-button"
+                        onclick="removeEquation(${index})"
+                    >
+                        ×
+                    </button>
+
+                    <strong>
+                        ${escapeHtml(item.name)}
+                    </strong>
+
+                    <br>
+
+                    ${escapeHtml(
+                        item.expression
+                    )}
+
+                </div>
+            `
+        )
+        .join("");
+
+
+    document.getElementById(
+        "constraintList"
+    ).innerHTML =
+        builderModel.constraints
+        .map(
+            (item, index) => `
+                <div class="builder-item">
+
+                    <button
+                        class="remove-button"
+                        onclick="removeConstraint(${index})"
+                    >
+                        ×
+                    </button>
+
+                    ${escapeHtml(
+                        item.expression
+                    )}
+
+                </div>
+            `
+        )
+        .join("");
+
+
+    document.getElementById(
+        "objectiveList"
+    ).innerHTML =
+        builderModel.objectives
+        .map(
+            (item, index) => `
+                <div class="builder-item">
+
+                    <button
+                        class="remove-button"
+                        onclick="removeObjective(${index})"
+                    >
+                        ×
+                    </button>
+
+                    ${escapeHtml(
+                        item.direction
+                    )}
+
+                    :
+
+                    ${escapeHtml(
+                        item.expression
+                    )}
+
+                </div>
+            `
+        )
+        .join("");
 
 }
 
 
 function clearBuilder() {
 
-    document.getElementById(
-        "projectName"
-    ).value =
-        "THETA Engineering Project";
+    builderModel = {
+        name: "Custom Technology Design",
+        type: "custom",
+        description: "Custom engineering model.",
+        variables: [],
+        equations: [],
+        constraints: [],
+        objectives: []
+    };
 
-
-    document.getElementById(
-        "projectDescription"
-    ).value = "";
-
-
-    document.getElementById(
-        "variables"
-    ).innerHTML = "";
+    renderBuilderLists();
 
     document.getElementById(
-        "equations"
-    ).innerHTML = "";
+        "advancedResultsPanel"
+    ).style.display = "none";
 
-    document.getElementById(
-        "constraints"
-    ).innerHTML = "";
-
-    document.getElementById(
-        "objectives"
-    ).innerHTML = "";
+}
 
 
-    currentModel = null;
+function loadAdvancedExample(name) {
+
+    if (name === "beam") {
+
+        builderModel =
+            JSON.parse(
+                JSON.stringify(
+                    beamExampleLocal()
+                )
+            );
+
+    }
+
+    renderBuilderLists();
+
+}
 
 
-    document.getElementById(
-        "reviewPanel"
-    ).classList.add(
-        "hidden"
-    );
+function beamExampleLocal() {
 
-
-    document.getElementById(
-        "resultsPanel"
-    ).classList.add(
-        "hidden"
-    );
+    return {
+        name: "Lightweight Beam",
+        type: "beam",
+        description:
+            "Example cantilever beam.",
+        variables: [
+            {
+                name: "b",
+                min: 0.01,
+                max: 0.20,
+                unit: "m"
+            },
+            {
+                name: "h",
+                min: 0.01,
+                max: 0.20,
+                unit: "m"
+            }
+        ],
+        equations: [
+            {
+                name: "moment",
+                expression: "500 * 1",
+                unit: "N*m"
+            },
+            {
+                name: "stress",
+                expression:
+                    "(500 * 1) / (b * h^2 / 6)",
+                unit: "Pa"
+            },
+            {
+                name: "mass",
+                expression:
+                    "b * h * 1 * 7850",
+                unit: "kg"
+            }
+        ],
+        constraints: [
+            "stress <= 200000000"
+        ],
+        objectives: [
+            {
+                expression: "mass",
+                direction: "minimize"
+            }
+        ]
+    };
 
 }
 
 
 async function runAdvanced() {
 
-    const model =
-        getBuilderModel();
+    if (
+        builderModel.variables.length === 0
+    ) {
 
-    currentModel =
-        model;
+        alert(
+            "Add at least one variable."
+        );
 
-    await runOptimization(
-        model
-    );
+        return;
+    }
+
+    if (
+        builderModel.equations.length === 0
+    ) {
+
+        alert(
+            "Add at least one equation."
+        );
+
+        return;
+    }
+
+    if (
+        builderModel.objectives.length === 0
+    ) {
+
+        alert(
+            "Add an objective."
+        );
+
+        return;
+    }
+
+    const panel =
+        document.getElementById(
+            "advancedResultsPanel"
+        );
+
+    const body =
+        document.getElementById(
+            "advancedResults"
+        );
+
+    panel.style.display =
+        "block";
+
+    body.innerHTML = `
+        <p style="color:#8e99a8">
+            THETA is searching the custom design space...
+        </p>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/optimize",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+                    body: JSON.stringify({
+                        model:
+                            builderModel,
+                        mode:
+                            "advanced"
+                    })
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Optimization failed."
+            );
+
+        }
+
+        currentModel =
+            builderModel;
+
+        currentOptimization =
+            data;
+
+        renderResults(
+            data,
+            body
+        );
+
+    } catch (error) {
+
+        body.innerHTML = `
+            <div class="upgrade">
+
+                <h3>
+                    Error
+                </h3>
+
+                <p>
+                    ${escapeHtml(
+                        error.message
+                    )}
+                </p>
+
+            </div>
+        `;
+
+    }
 
 }
 
 
-loadExample("beam");
+// ========================================================
+// STARTUP
+// ========================================================
+
+resetChat();
+
+loadAdvancedExample("beam");
 
 </script>
 
@@ -3045,22 +3741,32 @@ loadExample("beam");
 
 class ThetaHandler(BaseHTTPRequestHandler):
 
+    def log_message(self, format_string, *args):
+        print(
+            "%s - %s"
+            % (
+                self.address_string(),
+                format_string % args
+            )
+        )
+
     def send_json(self, data, status=200):
 
-        payload = json.dumps(
-            data
+        body = json.dumps(
+            data,
+            allow_nan=False
         ).encode("utf-8")
 
         self.send_response(status)
 
         self.send_header(
             "Content-Type",
-            "application/json; charset=utf-8"
+            "application/json"
         )
 
         self.send_header(
             "Content-Length",
-            str(len(payload))
+            str(len(body))
         )
 
         self.send_header(
@@ -3070,20 +3776,13 @@ class ThetaHandler(BaseHTTPRequestHandler):
 
         self.end_headers()
 
-        self.wfile.write(
-            payload
-        )
-
+        self.wfile.write(body)
 
     def send_html(self, html):
 
-        payload = html.encode(
-            "utf-8"
-        )
+        body = html.encode("utf-8")
 
-        self.send_response(
-            200
-        )
+        self.send_response(200)
 
         self.send_header(
             "Content-Type",
@@ -3092,38 +3791,54 @@ class ThetaHandler(BaseHTTPRequestHandler):
 
         self.send_header(
             "Content-Length",
-            str(len(payload))
+            str(len(body))
         )
 
         self.end_headers()
 
-        self.wfile.write(
-            payload
-        )
-
+        self.wfile.write(body)
 
     def read_json(self):
 
-        length = int(
-            self.headers.get(
-                "Content-Length",
-                "0"
+        try:
+
+            length = int(
+                self.headers.get(
+                    "Content-Length",
+                    "0"
+                )
             )
-        )
 
-        body = self.rfile.read(
-            length
-        )
+            raw = self.rfile.read(length)
 
-        if not body:
+            return json.loads(
+                raw.decode("utf-8")
+            )
+
+        except Exception:
+
             return {}
 
-        return json.loads(
-            body.decode(
-                "utf-8"
-            )
+    def do_OPTIONS(self):
+
+        self.send_response(204)
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*"
         )
 
+        self.send_header(
+            "Access-Control-Allow-Methods",
+            "GET, POST, OPTIONS"
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type"
+        )
+
+        self.end_headers()
 
     def do_GET(self):
 
@@ -3131,77 +3846,69 @@ class ThetaHandler(BaseHTTPRequestHandler):
             self.path
         )
 
-        if parsed.path == "/":
+        path = parsed.path
 
-            self.send_html(
-                HTML
+        if path == "/":
+
+            html = HTML.replace(
+                "__PRO_PAYMENT_LINK__",
+                PRO_PAYMENT_LINK
             )
+
+            html = html.replace(
+                "__ENGINEER_PAYMENT_LINK__",
+                ENGINEER_PAYMENT_LINK
+            )
+
+            self.send_html(html)
 
             return
 
+        if path == "/health":
 
-        if parsed.path == "/health":
-
-            self.send_json(
-                {
-                    "status": "online",
-                    "engine": "THETA"
-                }
-            )
+            self.send_json({
+                "status": "online",
+                "engine": "THETA",
+                "version": "1.0"
+            })
 
             return
 
+        if path == "/example":
 
-        if parsed.path == "/example":
-
-            query = parse_qs(
+            params = parse_qs(
                 parsed.query
             )
 
-            name = query.get(
+            name = params.get(
                 "name",
                 ["beam"]
             )[0]
 
-
             if name == "spring":
-
                 model = spring_example()
 
             elif name == "drone":
-
                 model = drone_example()
 
             elif name == "bracket":
-
                 model = bracket_example()
 
             else:
-
                 model = beam_example()
 
-
-            self.send_json(
-                {
-                    "success": True,
-                    "model":
-                        normalize_model(
-                            model
-                        )
-                }
-            )
+            self.send_json({
+                "model": model
+            })
 
             return
 
-
         self.send_json(
             {
-                "success": False,
                 "error": "Not found"
             },
             404
         )
-
 
     def do_POST(self):
 
@@ -3209,92 +3916,145 @@ class ThetaHandler(BaseHTTPRequestHandler):
             self.path
         )
 
-        try:
+        path = parsed.path
 
-            if parsed.path == "/interpret":
+        if path == "/interpret":
 
-                data = self.read_json()
+            data = self.read_json()
 
-                text = data.get(
+            text = str(
+                data.get(
                     "text",
                     ""
                 )
+            ).strip()
+
+            if not text:
+
+                self.send_json(
+                    {
+                        "error":
+                            "Engineering request is empty."
+                    },
+                    400
+                )
+
+                return
+
+            try:
 
                 model = interpret_engineering_request(
                     text
                 )
 
+                self.send_json({
+                    "model": model
+                })
+
+            except Exception as error:
+
                 self.send_json(
                     {
-                        "success": True,
-                        "model":
-                            normalize_model(
-                                model
-                            )
-                    }
+                        "error":
+                            str(error)
+                    },
+                    500
+                )
+
+            return
+
+        if path == "/optimize":
+
+            data = self.read_json()
+
+            model = data.get(
+                "model"
+            )
+
+            if not model:
+
+                self.send_json(
+                    {
+                        "error":
+                            "No model supplied."
+                    },
+                    400
                 )
 
                 return
 
+            try:
 
-            if parsed.path == "/optimize":
+                model = normalize_model(model)
 
-                project = self.read_json()
+                mode = str(
+                    data.get(
+                        "mode",
+                        "beginner"
+                    )
+                )
+
+                if mode == "advanced":
+
+                    population_size = 800
+                    generations = 90
+
+                else:
+
+                    population_size = 500
+                    generations = 60
 
                 result = optimize_model(
-                    project
+                    model,
+                    population_size=population_size,
+                    generations=generations
                 )
 
                 self.send_json(
                     result
                 )
 
-                return
+            except Exception as error:
 
+                self.send_json(
+                    {
+                        "error":
+                            str(error)
+                    },
+                    500
+                )
 
-            self.send_json(
-                {
-                    "success": False,
-                    "error": "Not found"
-                },
-                404
-            )
+            return
 
-
-        except Exception as error:
-
-            self.send_json(
-                {
-                    "success": False,
-                    "error": str(error)
-                },
-                500
-            )
-
-
-    def log_message(
-        self,
-        format_string,
-        *args
-    ):
-
-        print(
-            "[THETA]",
-            format_string % args
+        self.send_json(
+            {
+                "error":
+                    "Endpoint not found."
+            },
+            404
         )
 
 
 # ============================================================
-# START THETA
+# LOCAL BROWSER
 # ============================================================
 
 def open_browser():
 
-    webbrowser.open(
-        "http://127.0.0.1:" +
-        str(PORT)
-    )
+    try:
 
+        webbrowser.open(
+            f"http://127.0.0.1:{PORT}"
+        )
+
+    except Exception:
+
+        pass
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
@@ -3303,28 +4063,41 @@ def main():
         ThetaHandler
     )
 
-    print("")
-    print("=" * 70)
+    print()
+    print("=" * 72)
     print("THETA TECHNOLOGY DISCOVERY ENGINE")
-    print("=" * 70)
-    print("")
-    print("THETA is running at:")
+    print("V1 - MONETIZABLE LAUNCH EDITION")
+    print("=" * 72)
+    print()
     print(
-        "http://127.0.0.1:" +
-        str(PORT)
+        f"THETA running on port {PORT}"
     )
-    print("")
-    print("Press CTRL+C to stop THETA.")
-    print("")
+    print(
+        f"Local address: http://127.0.0.1:{PORT}"
+    )
+    print()
+    print(
+        "Engine: ONLINE"
+    )
+    print(
+        "Optimization: ONLINE"
+    )
+    print(
+        "Product interface: ONLINE"
+    )
+    print()
+    print(
+        "Press CTRL+C to stop."
+    )
+    print()
 
-
+    # Render provides its own public URL.
+    # Only open a browser when running locally.
     if not os.environ.get("RENDER"):
-
         threading.Timer(
             1.0,
             open_browser
         ).start()
-
 
     try:
 
@@ -3332,8 +4105,10 @@ def main():
 
     except KeyboardInterrupt:
 
-        print("")
-        print("Stopping THETA...")
+        print()
+        print(
+            "THETA shutting down..."
+        )
 
     finally:
 
@@ -3341,5 +4116,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
