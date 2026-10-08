@@ -1,45 +1,16 @@
 import ast
-import base64
-import hashlib
-import hmac
 import json
 import math
 import os
 import random
 import re
 import threading
-import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, quote
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse, parse_qs
 
-HOST = os.environ.get("HOST", "0.0.0.0")
+HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
-
-# THETA subscription settings
-FREE_LIMIT = 10
-PRO_LIMIT = 50
-ENGINEER_LIMIT = 250
-
-PRO_PAYMENT_LINK = os.environ.get("THETA_PRO_PAYMENT_LINK", "")
-ENGINEER_PAYMENT_LINK = os.environ.get("THETA_ENGINEER_PAYMENT_LINK", "")
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-PRO_PRICE_ID = os.environ.get("THETA_PRO_PRICE_ID", "")
-ENGINEER_PRICE_ID = os.environ.get("THETA_ENGINEER_PRICE_ID", "")
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
-LOCAL_USERS_FILE = os.environ.get("THETA_USERS_FILE", "theta_users.json")
-USER_LOCK = threading.Lock()
-
-PLAN_LIMITS = {
-    "free": FREE_LIMIT,
-    "pro": PRO_LIMIT,
-    "engineer": ENGINEER_LIMIT,
-}
 
 
 # ============================================================
@@ -978,332 +949,6 @@ def bracket_example():
 
 
 # ============================================================
-# SUBSCRIPTION / ACCOUNT SYSTEM
-# ============================================================
-
-def month_key():
-    return time.strftime("%Y-%m")
-
-
-def normalize_email(value):
-    email = str(value or "").strip().lower()
-    if len(email) > 254 or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-        return ""
-    return email
-
-
-def plan_limit(plan):
-    return PLAN_LIMITS.get(plan, FREE_LIMIT)
-
-
-def default_user(email):
-    return {
-        "email": email,
-        "plan": "free",
-        "searches_used": 0,
-        "month_key": month_key(),
-        "stripe_customer_id": "",
-        "stripe_subscription_id": "",
-        "subscription_status": "",
-    }
-
-
-def local_users():
-    try:
-        with open(LOCAL_USERS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def save_local_users(users):
-    temp = LOCAL_USERS_FILE + ".tmp"
-    with open(temp, "w", encoding="utf-8") as f:
-        json.dump(users, f, indent=2)
-    os.replace(temp, LOCAL_USERS_FILE)
-
-
-def supabase_request(method, path, body=None, query=""):
-    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
-        return None
-
-    url = SUPABASE_URL + "/rest/v1/" + path
-    if query:
-        url += "?" + query
-
-    headers = {
-        "apikey": SUPABASE_SECRET_KEY,
-        "Authorization": "Bearer " + SUPABASE_SECRET_KEY,
-        "Content-Type": "application/json",
-    }
-
-    if method in ("POST", "PATCH"):
-        headers["Prefer"] = "return=representation"
-
-    request = Request(url, method=method, headers=headers)
-    if body is not None:
-        request.data = json.dumps(body).encode("utf-8")
-
-    try:
-        with urlopen(request, timeout=15) as response:
-            raw = response.read().decode("utf-8")
-            if not raw:
-                return []
-            return json.loads(raw)
-    except HTTPError as error:
-        message = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError("Database error: " + message[:500])
-    except URLError as error:
-        raise RuntimeError("Database connection error: " + str(error))
-
-
-def get_user(email):
-    email = normalize_email(email)
-    if not email:
-        return None
-
-    if SUPABASE_URL and SUPABASE_SECRET_KEY:
-        rows = supabase_request(
-            "GET",
-            "theta_users",
-            query="select=*&email=eq." + quote(email, safe="") + "&limit=1",
-        )
-        if rows:
-            user = rows[0]
-        else:
-            user = default_user(email)
-            supabase_request("POST", "theta_users", user)
-        return reset_user_month_if_needed(user)
-
-    with USER_LOCK:
-        users = local_users()
-        user = users.get(email)
-        if not user:
-            user = default_user(email)
-            users[email] = user
-            save_local_users(users)
-        return reset_user_month_if_needed(user)
-
-
-def save_user(user):
-    if SUPABASE_URL and SUPABASE_SECRET_KEY:
-        email = quote(user["email"], safe="")
-        supabase_request(
-            "PATCH",
-            "theta_users",
-            body=user,
-            query="email=eq." + email,
-        )
-        return
-
-    with USER_LOCK:
-        users = local_users()
-        users[user["email"]] = user
-        save_local_users(users)
-
-
-def reset_user_month_if_needed(user):
-    current = month_key()
-    if user.get("month_key") != current:
-        user["month_key"] = current
-        user["searches_used"] = 0
-        save_user(user)
-    return user
-
-
-def consume_search(email):
-    user = get_user(email)
-    if not user:
-        return {"allowed": False, "error": "Enter a valid email address first."}
-
-    user = reset_user_month_if_needed(user)
-    limit = plan_limit(user.get("plan", "free"))
-    used = int(user.get("searches_used", 0))
-
-    if used >= limit:
-        return {
-            "allowed": False,
-            "user": user,
-            "error": "You have reached your " + user.get("plan", "free").upper() + " plan limit of " + str(limit) + " searches for this month.",
-        }
-
-    user["searches_used"] = used + 1
-    save_user(user)
-
-    return {
-        "allowed": True,
-        "user": user,
-        "remaining": max(0, limit - used - 1),
-    }
-
-
-def stripe_request(method, path, body=None):
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError("Stripe is not configured yet.")
-
-    url = "https://api.stripe.com/v1/" + path
-    data = None
-    headers = {
-        "Authorization": "Bearer " + STRIPE_SECRET_KEY,
-    }
-
-    if body is not None:
-        from urllib.parse import urlencode
-        data = urlencode(body).encode("utf-8")
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-    request = Request(url, data=data, method=method, headers=headers)
-
-    try:
-        with urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        message = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError("Stripe API error: " + message[:500])
-
-
-def plan_from_price(price_id):
-    if price_id and price_id == ENGINEER_PRICE_ID:
-        return "engineer"
-    if price_id and price_id == PRO_PRICE_ID:
-        return "pro"
-    return "free"
-
-
-def stripe_customer_email(customer_id):
-    if not customer_id:
-        return ""
-    try:
-        customer = stripe_request("GET", "customers/" + quote(str(customer_id), safe=""))
-        return normalize_email(customer.get("email", ""))
-    except Exception:
-        return ""
-
-
-def update_subscription_from_stripe(customer_id, subscription_id, status, price_id):
-    email = stripe_customer_email(customer_id)
-    if not email:
-        return
-
-    plan = plan_from_price(price_id)
-    if status in ("canceled", "unpaid", "incomplete_expired"):
-        plan = "free"
-
-    user = get_user(email)
-    if not user:
-        user = default_user(email)
-
-    user["plan"] = plan
-    user["stripe_customer_id"] = str(customer_id or "")
-    user["stripe_subscription_id"] = str(subscription_id or "")
-    user["subscription_status"] = str(status or "")
-    save_user(user)
-
-
-def verify_stripe_signature(payload, signature_header):
-    if not STRIPE_WEBHOOK_SECRET:
-        return False
-
-    parts = {}
-    for item in str(signature_header or "").split(","):
-        if "=" in item:
-            key, value = item.split("=", 1)
-            parts.setdefault(key, []).append(value)
-
-    timestamps = parts.get("t", [])
-    signatures = parts.get("v1", [])
-    if not timestamps or not signatures:
-        return False
-
-    try:
-        timestamp = int(timestamps[0])
-    except ValueError:
-        return False
-
-    if abs(int(time.time()) - timestamp) > 300:
-        return False
-
-    signed = str(timestamp).encode("utf-8") + b"." + payload
-    expected = hmac.new(
-        STRIPE_WEBHOOK_SECRET.encode("utf-8"),
-        signed,
-        hashlib.sha256,
-    ).hexdigest()
-
-    return any(hmac.compare_digest(expected, item) for item in signatures)
-
-
-def handle_stripe_event(event):
-    event_type = event.get("type", "")
-    obj = event.get("data", {}).get("object", {})
-
-    if event_type == "checkout.session.completed":
-        customer_id = obj.get("customer", "")
-        subscription_id = obj.get("subscription", "")
-        if subscription_id:
-            try:
-                subscription = stripe_request(
-                    "GET",
-                    "subscriptions/" + quote(str(subscription_id), safe=""),
-                )
-                items = subscription.get("items", {}).get("data", [])
-                price_id = ""
-                if items:
-                    price_id = items[0].get("price", {}).get("id", "")
-                update_subscription_from_stripe(
-                    customer_id,
-                    subscription_id,
-                    subscription.get("status", "active"),
-                    price_id,
-                )
-            except Exception:
-                pass
-        return
-
-    if event_type in (
-        "customer.subscription.created",
-        "customer.subscription.updated",
-        "customer.subscription.deleted",
-    ):
-        items = obj.get("items", {}).get("data", [])
-        price_id = ""
-        if items:
-            price_id = items[0].get("price", {}).get("id", "")
-        update_subscription_from_stripe(
-            obj.get("customer", ""),
-            obj.get("id", ""),
-            obj.get("status", "canceled" if event_type.endswith("deleted") else ""),
-            price_id,
-        )
-
-
-def account_payload(email):
-    user = get_user(email)
-    if not user:
-        return {
-            "success": False,
-            "error": "Enter a valid email address.",
-        }
-
-    plan = user.get("plan", "free")
-    limit = plan_limit(plan)
-    used = int(user.get("searches_used", 0))
-
-    return {
-        "success": True,
-        "email": user["email"],
-        "plan": plan,
-        "plan_name": plan.upper(),
-        "limit": limit,
-        "used": used,
-        "remaining": max(0, limit - used),
-        "subscription_status": user.get("subscription_status", ""),
-        "configured": bool(SUPABASE_URL and SUPABASE_SECRET_KEY),
-    }
-
-
-# ============================================================
 # HTML APPLICATION
 # ============================================================
 
@@ -1312,6 +957,8 @@ HTML = r"""<!DOCTYPE html>
 <head>
 
 <meta charset="UTF-8">
+
+<meta name="google-site-verification" content="MMIdUHh9590WwUT1WeDykMUXzQPk8wpeor6DDPGCAp4" />
 
 <meta
     name="viewport"
@@ -1616,59 +1263,6 @@ select:focus {
     color: #8993a3;
 }
 
- .accountbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.accountbar input {
-    width: 220px;
-    padding: 8px 10px;
-}
-
-.plan-badge {
-    border: 1px solid #303744;
-    border-radius: 999px;
-    padding: 7px 11px;
-    font-size: 12px;
-    font-weight: 700;
-}
-
-.usage {
-    color: #aab3c2;
-    font-size: 12px;
-}
-
-.pricing {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-top: 20px;
-}
-
-.price-card {
-    border: 1px solid #282f3a;
-    border-radius: 12px;
-    padding: 18px;
-    background: #090d13;
-}
-
-.price-card h3 {
-    margin-top: 0;
-}
-
-@media (max-width: 800px) {
-    .pricing {
-        grid-template-columns: 1fr;
-    }
-
-    .accountbar input {
-        width: 100%;
-    }
-}
-
 footer {
     color: #677181;
     padding: 50px 0;
@@ -1704,14 +1298,6 @@ footer {
 <header class="topbar">
 
     <div class="logo">THETA</div>
-
-    <div class="accountbar">
-        <input id="accountEmail" type="email" placeholder="Email for usage account">
-        <button class="secondary" onclick="saveAccount()">Save</button>
-        <span id="planBadge" class="plan-badge">FREE</span>
-        <span id="usageText" class="usage">10 searches/month</span>
-        <button id="upgradeButton" class="primary" onclick="upgradeToPro()">Upgrade</button>
-    </div>
 
     <div class="status">
         ● ENGINE ONLINE
@@ -2092,27 +1678,6 @@ footer {
 </main>
 
 
-<section class="panel">
-    <h2>THETA Plans</h2>
-    <div class="pricing">
-        <div class="price-card">
-            <h3>Free</h3>
-            <p>10 searches/month</p>
-            <p class="muted">Try the THETA design engine.</p>
-        </div>
-        <div class="price-card">
-            <h3>Pro — $9.99/month</h3>
-            <p>50 searches/month</p>
-            <button class="primary" onclick="upgradeToPro()">Upgrade to Pro</button>
-        </div>
-        <div class="price-card">
-            <h3>Engineer — $29.99/month</h3>
-            <p>250 searches/month</p>
-            <button class="secondary" onclick="upgradeToEngineer()">Upgrade to Engineer</button>
-        </div>
-    </div>
-</section>
-
 <footer>
     THETA Technology Discovery Engine
 </footer>
@@ -2134,75 +1699,6 @@ function escapeHtml(value) {
 
 }
 
-
-async function saveAccount() {
-    const input = document.getElementById("accountEmail");
-    const email = input.value.trim().toLowerCase();
-    if (!email) {
-        alert("Enter your email address first.");
-        return;
-    }
-    localStorage.setItem("theta_email", email);
-    await refreshAccount();
-}
-
-async function refreshAccount() {
-    const email = localStorage.getItem("theta_email") || "";
-    const input = document.getElementById("accountEmail");
-    if (email) input.value = email;
-    if (!email) return;
-
-    try {
-        const response = await fetch("/account?email=" + encodeURIComponent(email));
-        const data = await response.json();
-        if (!data.success) return;
-
-        document.getElementById("planBadge").textContent = data.plan_name;
-        document.getElementById("usageText").textContent =
-            data.remaining + " / " + data.limit + " searches remaining";
-
-        const upgrade = document.getElementById("upgradeButton");
-        if (data.plan === "engineer") {
-            upgrade.textContent = "Engineer Active";
-            upgrade.disabled = true;
-        } else if (data.plan === "pro") {
-            upgrade.textContent = "Upgrade to Engineer";
-            upgrade.disabled = false;
-            upgrade.onclick = upgradeToEngineer;
-        } else {
-            upgrade.textContent = "Upgrade to Pro";
-            upgrade.disabled = false;
-            upgrade.onclick = upgradeToPro;
-        }
-    } catch (error) {
-        console.log(error);
-    }
-}
-
-function requireEmail() {
-    let email = localStorage.getItem("theta_email") || "";
-    if (!email) {
-        email = prompt("Enter your email address to create your THETA account:");
-        if (email) {
-            email = email.trim().toLowerCase();
-            localStorage.setItem("theta_email", email);
-            document.getElementById("accountEmail").value = email;
-        }
-    }
-    return email;
-}
-
-function upgradeToPro() {
-    const email = requireEmail();
-    if (!email) return;
-    window.location.href = "/checkout?plan=pro&email=" + encodeURIComponent(email);
-}
-
-function upgradeToEngineer() {
-    const email = requireEmail();
-    if (!email) return;
-    window.location.href = "/checkout?plan=engineer&email=" + encodeURIComponent(email);
-}
 
 function showMode(mode) {
 
@@ -2575,13 +2071,6 @@ async function runOptimization(model) {
 
     try {
 
-        const email = requireEmail();
-        if (!email) {
-            results.innerHTML =
-                "<p>Enter your email address before running THETA.</p>";
-            return;
-        }
-
         const response =
             await fetch(
                 "/optimize",
@@ -2591,21 +2080,12 @@ async function runOptimization(model) {
                         "Content-Type":
                             "application/json"
                     },
-                    body: JSON.stringify({
-                        model: model,
-                        email: email
-                    })
+                    body: JSON.stringify(model)
                 }
             );
 
         const data =
             await response.json();
-
-        if (data.account) {
-            document.getElementById("planBadge").textContent = data.account.plan_name;
-            document.getElementById("usageText").textContent =
-                data.account.remaining + " / " + data.account.limit + " searches remaining";
-        }
 
         if (!data.success) {
 
@@ -3550,7 +3030,6 @@ async function runAdvanced() {
 }
 
 
-refreshAccount();
 loadExample("beam");
 
 </script>
@@ -3673,31 +3152,6 @@ class ThetaHandler(BaseHTTPRequestHandler):
             return
 
 
-        if parsed.path == "/account":
-            query = parse_qs(parsed.query)
-            email = query.get("email", [""])[0]
-            self.send_json(account_payload(email))
-            return
-
-        if parsed.path == "/checkout":
-            query = parse_qs(parsed.query)
-            plan = query.get("plan", ["pro"])[0]
-            email = normalize_email(query.get("email", [""])[0])
-            if plan == "engineer":
-                link = ENGINEER_PAYMENT_LINK
-            else:
-                link = PRO_PAYMENT_LINK
-            if not link:
-                self.send_json({"success": False, "error": "Stripe payment link is not configured yet."}, 503)
-                return
-            if email:
-                separator = "&" if "?" in link else "?"
-                link = link + separator + "prefilled_email=" + quote(email, safe="")
-            self.send_response(302)
-            self.send_header("Location", link)
-            self.end_headers()
-            return
-
         if parsed.path == "/example":
 
             query = parse_qs(
@@ -3757,18 +3211,6 @@ class ThetaHandler(BaseHTTPRequestHandler):
 
         try:
 
-            if parsed.path == "/stripe-webhook":
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = self.rfile.read(length)
-                signature = self.headers.get("Stripe-Signature", "")
-                if not verify_stripe_signature(payload, signature):
-                    self.send_json({"success": False, "error": "Invalid Stripe signature."}, 400)
-                    return
-                event = json.loads(payload.decode("utf-8"))
-                handle_stripe_event(event)
-                self.send_json({"received": True})
-                return
-
             if parsed.path == "/interpret":
 
                 data = self.read_json()
@@ -3797,32 +3239,11 @@ class ThetaHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/optimize":
 
-                data = self.read_json()
-                email = normalize_email(data.get("email", ""))
-                project = data.get("model", {})
-
-                if not email:
-                    self.send_json({
-                        "success": False,
-                        "error": "Enter a valid email address before running THETA."
-                    }, 400)
-                    return
-
-                usage = consume_search(email)
-
-                if not usage["allowed"]:
-                    payload = {
-                        "success": False,
-                        "error": usage["error"],
-                        "account": account_payload(email),
-                    }
-                    self.send_json(payload, 402)
-                    return
+                project = self.read_json()
 
                 result = optimize_model(
                     project
                 )
-                result["account"] = account_payload(email)
 
                 self.send_json(
                     result
@@ -3895,11 +3316,10 @@ def main():
     print("")
     print("Press CTRL+C to stop THETA.")
     print("")
-    print("Subscription database:", "Supabase" if SUPABASE_URL and SUPABASE_SECRET_KEY else "LOCAL TEST MODE")
-    print("Stripe:", "configured" if STRIPE_SECRET_KEY else "not configured")
-    print("")
+
 
     if not os.environ.get("RENDER"):
+
         threading.Timer(
             1.0,
             open_browser
