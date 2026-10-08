@@ -182,6 +182,17 @@ def create_user(email, password):
         connection.close()
 
 
+def create_guest_user():
+    """Create a temporary Free account so THETA can be used immediately.
+
+    Guests still receive the normal server-side Free usage limit. If they
+    later register or sign in, the normal account session replaces the guest.
+    """
+    guest_email = "guest-" + secrets.token_hex(16) + "@guest.theta.invalid"
+    guest_password = secrets.token_urlsafe(32)
+    return create_user(guest_email, guest_password)
+
+
 def create_session(user_id):
     raw_token = secrets.token_urlsafe(48)
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
@@ -2566,8 +2577,16 @@ async function sendChat() {
                 }
             );
 
-        const data =
-            await response.json();
+        let data = {};
+
+        try {
+            data = await response.json();
+        } catch (parseError) {
+            data = {
+                success: false,
+                error: "The server returned an invalid response."
+            };
+        }
 
         const messages =
             document.getElementById("messages");
@@ -2576,6 +2595,23 @@ async function sendChat() {
             messages.removeChild(
                 messages.lastElementChild
             );
+        }
+
+        if (!response.ok || !data.success) {
+            addMessage(
+                data.error ||
+                "THETA could not build the engineering model.",
+                "theta"
+            );
+            return;
+        }
+
+        if (!data.model) {
+            addMessage(
+                "THETA returned no engineering model.",
+                "theta"
+            );
+            return;
         }
 
         currentModel =
@@ -2590,8 +2626,19 @@ async function sendChat() {
 
     } catch (error) {
 
+        console.error("THETA sendChat error:", error);
+
+        const messages =
+            document.getElementById("messages");
+
+        if (messages.lastElementChild) {
+            messages.removeChild(
+                messages.lastElementChild
+            );
+        }
+
         addMessage(
-            "THETA could not reach the local engine.",
+            "THETA could not complete the request. Please try again.",
             "theta"
         );
 
@@ -3857,8 +3904,13 @@ class ThetaHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
-        for cookie in cookies or []:
+
+        all_cookies = list(getattr(self, "_pending_cookies", []))
+        all_cookies.extend(cookies or [])
+
+        for cookie in all_cookies:
             self.send_header("Set-Cookie", cookie)
+
         self.end_headers()
         self.wfile.write(payload)
 
@@ -3891,13 +3943,34 @@ class ThetaHandler(BaseHTTPRequestHandler):
 
     def require_user(self):
         user = self.current_user()
-        if not user:
+        if user:
+            return user
+
+        # THETA is designed to open directly to the product. A visitor gets
+        # a temporary Free account automatically instead of being blocked by
+        # the Send button with a 401 error. The normal Free usage limit still
+        # applies on the server.
+        try:
+            guest = create_guest_user()
+            token = create_session(guest["id"])
+            self._pending_cookies = []
+            append_cookie(
+                self._pending_cookies,
+                "theta_session",
+                token,
+                max_age=SESSION_DAYS * 86400,
+            )
+            return guest
+        except Exception as error:
+            print("[THETA GUEST]", repr(error))
             self.send_json(
-                {"success": False, "error": "Please sign in to use THETA."},
-                401,
+                {
+                    "success": False,
+                    "error": "THETA could not create a temporary session. Please try again."
+                },
+                500,
             )
             return None
-        return user
 
 
     def require_usage(self):
